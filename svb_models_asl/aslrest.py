@@ -8,11 +8,13 @@ except ImportError:
 
 import numpy as np
 
-from svb import __version__
-from svb.model import Model, ModelOption, ValueList
+from svb.model import Model, ModelOption
+from svb.utils import ValueList
 from svb.parameter import get_parameter
 import svb.dist as dist
 import svb.prior as prior
+
+from svb_models_asl import __version__
 
 class AslRestModel(Model):
     """
