@@ -27,6 +27,6 @@ logging.getLogger().setLevel(logging.INFO)
 sig = np.zeros((1, 6), dtype=np.float32)
 data_model = DataModel(sig)
 model = AslNNModel(data_model, tis=tis, 
-                   train_examples=500, train_steps=200, train_lr=0.05, train_batch_size=1000,
+                   train_examples=500000, train_steps=20000, train_lr=0.05, train_batch_size=1000,
                    train_delttiss_max=3.0,
                    train_save="trained_data", **options)
