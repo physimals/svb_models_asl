@@ -25,7 +25,7 @@ options = {
     "casl" : True,
     "plds" : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
     "repeats" : [1],
-    "learning_rate" : 0.01,
+    "learning_rate" : 0.05,
     "sample_size" : 10,
     "epochs" : 5000,
     "log_stream" : sys.stdout,
