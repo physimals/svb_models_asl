@@ -3,19 +3,20 @@ import os.path
 import subprocess
 
 import numpy as np
+import sklearn.metrics
 
 import nibabel as nib
-from fabber import Fabber
 
 from svb import DataModel
 from svb_models_asl import AslRestModel, AslNNModel
 import logging
 logging.getLogger().setLevel(logging.INFO)
 
-tis = [2.05, 2.3, 2.55, 2.8, 3.05, 3.3]
-n = 1000
+TIS = [2.05, 2.3, 2.55, 2.8, 3.05, 3.3]
+NOISE_SD = 0.0
+CUBE_SIDE = 10
 
-options = {
+OPTIONS = {
     "model" : "buxton",
     #"inctiss" : True,
     #"infertiss" : True,
@@ -31,62 +32,41 @@ options = {
     't1': 1.3
 }
 
-def get_sample_data(tis, n=1000, **kwargs):
-    """
-    Generate training data by evaluating Fabber model
-    """
-    fab = Fabber()
-   
-    options.update(**kwargs)
+# Generate test data
+n = CUBE_SIDE ** 3
+sig = np.zeros((1, len(tis)), dtype=np.float32)
+data_model = DataModel(sig)
+model = AslRestModel(data_model, tis=tis, **options)
+ftiss = np.random.uniform(1.0, 20.0, size=(n,))
+delttiss = np.random.uniform(0.6, 2.5, size=(n,))
+params = np.zeros((2, n, 1), dtype=np.float32)
+tpts = np.zeros((n, len(tis)), dtype=np.float32)
+tpts[..., :] = TIS
+params[0, :, 0] = ftiss
+params[1, :, 0] = delttiss
+sim_sig = np.random.normal(model.ievaluate(params, tpts), NOISE_SD)
+print("Generated %i instances of test data" % n)
 
-    params = {}
-    n_ti = len(tis)
-    fit_data = np.zeros((n, 2 + n_ti), dtype=np.float32)
-    for idx in range(n):
-        ftiss = np.random.uniform(4.0, 5.0)
-        delttiss = np.random.uniform(1.2, 1.4)
-        params["ftiss"] = ftiss
-        params['delttiss'] = delttiss
-        output = fab.model_evaluate(options, params, nvols=6)
-        #output = np.random.normal(output, 0.1)
-        fit_data[idx,0] = ftiss
-        fit_data[idx,1] = delttiss
-        fit_data[idx,2:(3 + n_ti)] = np.array((output))
-    print("Generated %i instances of test data" % n)
-
-    return fit_data[:, 0], fit_data[:, 1], fit_data[:, 2:]
-
-def get_sample_data_svb(tis, n=1000, **kwargs):
-    sig = np.zeros((1, len(tis)), dtype=np.float32)
-    data_model = DataModel(sig)
-    model = AslRestModel(data_model, tis=tis, **options)
-    params = np.zeros((2, n, 1), dtype=np.float32)
-    tpts = np.zeros((n, len(tis)), dtype=np.float32)
-    tpts[..., :] = tis
-    params[0, :, 0] = np.random.uniform(4.0, 5.0, size=(n,))
-    params[1, :, 0] = np.random.uniform(1.2, 1.4, size=(n,))
-    modelsig = model.ievaluate(params, tpts)
-    print("Generated %i instances of test data" % n)
-
-    return params[0, :, 0], params[1, :, 0], modelsig
-
-ftiss, delttiss, sig = get_sample_data_svb(tis=tis, n=n)
+# Save test data to Nifti files
 nii = nib.Nifti1Image(ftiss.reshape((10, 10, 10)), None)
 nii.to_filename("ftiss.nii.gz")
 nii = nib.Nifti1Image(delttiss.reshape((10, 10, 10)), None)
 nii.to_filename("delttiss.nii.gz")
-nii = nib.Nifti1Image(sig.reshape((10, 10, 10, -1)), None)
+nii = nib.Nifti1Image(sim_sig.reshape((10, 10, 10, -1)), None)
 nii.to_filename("sig.nii.gz")
 
+# Try throwing the ftiss/delttiss ground truth at the NN model and
+# see if it matches the ASLREST simulated signal. Note that this may
+# not give good accuracy if there is noise
 data_model = DataModel(sig)
-model = AslNNModel(data_model, tis=tis, train_load="trained_data", **options)
-tpts = np.zeros((n, len(tis)), dtype=np.float32)
-tpts[..., :] = tis
+model = AslNNModel(data_model, tis=TIS, train_load="trained_data", **options)
+tpts = np.zeros((n, len(TIS)), dtype=np.float32)
+tpts[..., :] = TIS
 modelsig = model.ievaluate(np.array([ftiss.reshape((n, 1)), delttiss.reshape((n, 1))]), tpts)
-from sklearn.metrics import r2_score
-for idx in range(len(tis)):
-    accuracy = r2_score(modelsig[..., idx], sig[..., idx])
+for idx in range(len(TIS)):
+    accuracy = sklearn.metrics.r2_score(modelsig[..., idx], sig[..., idx])
     print('accuracy %i: %.3f' % (idx, accuracy))
 
+# Save the NN model prediction to a Nifti file
 nii = nib.Nifti1Image(modelsig.reshape((10, 10, 10, -1)), None)
 nii.to_filename("modelsig.nii.gz")
