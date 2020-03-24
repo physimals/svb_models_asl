@@ -24,6 +24,7 @@ options = {
 }
 
 logging.getLogger().setLevel(logging.INFO)
+
 sig = np.zeros((1, 6), dtype=np.float32)
 data_model = DataModel(sig)
 model = AslNNModel(data_model, tis=tis, 

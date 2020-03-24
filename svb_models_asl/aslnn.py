@@ -80,6 +80,8 @@ class AslNNModel(Model):
         self.variable_biases = []
         self.trained_weights = None
         self.trained_biases = None
+        if self.train_save:
+            self._init_nn()
 
     def __str__(self):
         return "ASL neural network model: %s" % __version__
