@@ -6,9 +6,11 @@ except ImportError:
 
 from .aslnn import AslNNModel
 from .aslrest import AslRestModel
+from .aslrest_disp import AslRestDisp
 
 __all__ = [
     "AslNNModel",
     "AslRestModel",
+    "AslRestDisp",
     "__version__"
 ]

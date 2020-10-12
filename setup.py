@@ -90,6 +90,7 @@ KWARGS = {
         'svb.models' : [
             'aslnn=svb_models_asl:AslNNModel',
             'aslrest=svb_models_asl:AslRestModel',
+            'aslrest_disp=svb_models_asl:AslRestDisp',
         ],
     },
     'classifiers' : [
