@@ -11,8 +11,6 @@ import numpy as np
 from svb.model import Model, ModelOption
 from svb.utils import ValueList
 from svb.parameter import get_parameter
-import svb.dist as dist
-import svb.prior as prior
 
 from svb_models_asl import __version__
 
@@ -72,7 +70,7 @@ class AslRestModel(Model):
         if self.inferart:
             self.leadscale = 0.01
             self.params.append(
-                get_parameter("fblood", dist="FoldedNormal",
+                get_parameter("fblood", dist="Normal",
                               mean=0.0, prior_var=1e6, post_var=1.5,
                               post_init=self._init_fblood,
                               prior_type="A",
@@ -88,13 +86,14 @@ class AslRestModel(Model):
         """
         Basic PASL/pCASL kinetic model
 
-        :param t: Sequence of time values of length N
+        :param t: Time values tensor of shape [W, 1, N] or [1, 1, N]
         :param params Sequence of parameter values arrays, one for each parameter.
-                      Each array is MxN tensor where M is the number of voxels. This
-                      may be supplied as a PxMxN tensor where P is the number of
+                      Each array is [W, S, 1] tensor where W is the number of nodes and
+                      S the number of samples. This
+                      may be supplied as a [P, W, S, 1] tensor where P is the number of
                       parameters.
 
-        :return: MxN tensor containing model output at the specified time values
+        :return: [W, S, N] tensor containing model output at the specified time values
                  and for each time value using the specified parameter values
         """
         # Extract parameter tensors
@@ -110,21 +109,24 @@ class AslRestModel(Model):
             t1 = self.t1
 
         if self.inferart:
-            fblood = params[opt_param_idx]
-            deltblood = params[opt_param_idx+1]
+            fblood = self.log_tf(params[opt_param_idx], name="fblood", shape=True, force=False)
+            deltblood = self.log_tf(params[opt_param_idx+1], name="deltblood", shape=True, force=False)
             opt_param_idx += 2
         else:
             fblood = 0
             deltblood = delt
 
-        signal = self.log_tf(self._tissue_signal(t, ftiss, delt, t1), name="tiss_signal")
+        # Extra parameters may be required by subclasses, e.g. dispersion parameters
+        extra_params = params[opt_param_idx:]
+
+        signal = self.log_tf(self.tissue_signal(t, ftiss, delt, t1, extra_params), name="tiss_signal")
 
         if self.inferart:
-            signal += self.log_tf(self._art_signal(t, fblood, deltblood), name="art_signal")
+            signal += self.log_tf(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
 
         return self.log_tf(signal, name="asl_signal")
 
-    def _tissue_signal(self, t, ftiss, delt, t1):
+    def tissue_signal(self, t, ftiss, delt, t1, extra_params):
         """
         PASL/pCASL kinetic model for tissue
         """
@@ -161,7 +163,7 @@ class AslRestModel(Model):
 
         return ftiss*signal
 
-    def _art_signal(self, t, fblood, deltblood):
+    def art_signal(self, t, fblood, deltblood, extra_params):
         """
         PASL/pCASL Kinetic model for arterial curve
         
@@ -222,10 +224,10 @@ class AslRestModel(Model):
         """
         Initial value for the flow parameter
         """
-        return tf.reduce_mean(data, axis=1), None
+        return tf.math.maximum(tf.reduce_max(data, axis=1), 0.1), None
 
     def _init_fblood(self, _param, _t, data):
         """
         Initial value for the fblood parameter
         """
-        return tf.reduce_mean(data, axis=1), None
+        return tf.math.maximum(tf.reduce_max(data, axis=1), 0.1), None
