@@ -24,16 +24,18 @@ class AslRestDisp(AslRestModel):
     OPTIONS = AslRestModel.OPTIONS + [
         ModelOption("conv_dt", "Time interval for numerical convolution", units="s", type=float, default=0.1),
         ModelOption("conv_type", "Convolution type ('gamma' only supprted type presently)", type=str, default="gamma"),
+        ModelOption("infer_disp_params", "Whether to infer parameters of the dispersion", type=bool, default=True),
     ]
 
     def __init__(self, data_model, **options):
         AslRestModel.__init__(self, data_model, **options)
-        self.params.append(
-            get_parameter("s", dist="LogNormal", mean=7.4, var=2.0, **options)
-        )
-        self.params.append(
-            get_parameter("sp", dist="LogNormal", mean=0.74, var=2.0, **options)
-        )
+        if self.infer_disp_params:
+            self.params.append(
+                get_parameter("s", dist="LogNormal", mean=7.4, var=2.0, **options)
+            )
+            self.params.append(
+                get_parameter("sp", dist="LogNormal", mean=0.74, var=2.0, **options)
+            )
 
         # t values for numerical evaluation of convolution [NT]
         self.conv_tmax = max(max(self.tis), 5.0)
@@ -62,7 +64,7 @@ class AslRestDisp(AslRestModel):
         return ftiss*signal
 
     def art_signal(self, t, fblood, deltblood, extra_params):
-        return fblood * aif_gammadisp(t, deltblood, extra_params)
+        return fblood * self.aif_gammadisp(t, deltblood, extra_params)
 
     def aif_gammadisp(self, t, delt, extra_params):
         """
@@ -77,10 +79,15 @@ class AslRestDisp(AslRestModel):
         :return: kcblood [W, S, NT] or [W, NT]
         """
         # Dispersion parameters - note range check as per Fabber
-        s = extra_params[0]
-        sp = extra_params[1]
-        sp = tf.clip_by_value(sp, -1e12, 10)
-
+        if self.infer_disp_params:
+            s = extra_params[0]
+            sp = extra_params[1]
+            sp = tf.clip_by_value(sp, -1e12, 10)
+        else:
+            # Prior defaults from Fabber
+            s = 7.4
+            sp = 0.74
+    
         pre_bolus = self.log_tf(tf.less(t, delt, name="aif_pre_bolus"), shape=True)
         post_bolus = self.log_tf(tf.greater(t, tf.add(delt, self.tau), name="aif_pre_bolus"), shape=True)
         during_bolus = tf.logical_and(tf.logical_not(pre_bolus), tf.logical_not(post_bolus))
