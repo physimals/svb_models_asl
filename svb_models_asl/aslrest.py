@@ -26,6 +26,8 @@ class AslRestModel(Model):
         ModelOption("casl", "Data is CASL/pCASL", type=bool, default=False),
         ModelOption("att", "Bolus arrival time", units="s", type=float, default=1.3),
         ModelOption("attsd", "Bolus arrival time prior std.dev.", units="s", type=float, default=None),
+        ModelOption("artt", "Arterial bolus arrival time", units="s", type=float, default=None),
+        ModelOption("arttsd", "Arterial bolus arrival time prior std.dev.", units="s", type=float, default=None),
         ModelOption("t1", "Tissue T1 value", units="s", type=float, default=1.3),
         ModelOption("t1b", "Blood T1 value", units="s", type=float, default=1.65),
         ModelOption("tis", "Inversion times", units="s", type=ValueList(float)),
@@ -33,9 +35,11 @@ class AslRestModel(Model):
         ModelOption("repeats", "Number of repeats - single value or one per TI/PLD", units="s", type=ValueList(int), default=[1]),
         ModelOption("slicedt", "Increase in TI/PLD per slice", units="s", type=float, default=0),
         ModelOption("inferart", "Infer arterial component", type=bool),
+        ModelOption("artonly", "Only infer arterial component not tissue", type=bool),
         ModelOption("infert1", "Infer T1 value", type=bool),
         ModelOption("pc", "Blood/tissue partition coefficient", type=float, default=0.9),
         ModelOption("fcalib", "Perfusion value to use in estimation of effective T1", type=float, default=0.01),
+        ModelOption("att_init", "Initialization method for ATT (max=max signal - bolus duration)", default=""),
     ]
 
     def __init__(self, data_model, **options):
@@ -48,25 +52,37 @@ class AslRestModel(Model):
 
         if self.attsd is None:
             self.attsd = 1.0 if len(self.tis) > 1 else 0.1
+        if self.artt is None:
+            self.artt = self.att - 0.3
+        if self.arttsd is None:
+            self.arttsd = self.attsd
+
         if isinstance(self.repeats, int):
             self.repeats = [self.repeats]
         if len(self.repeats) == 1:
             # FIXME variable repeats
             self.repeats = self.repeats[0]
 
-        self.params = [
-            get_parameter("ftiss", dist="LogNormal", 
-                          mean=1.5, prior_var=1e6, post_var=1.5, 
-                          post_init=self._init_flow,
-                          **options),
-            get_parameter("delttiss", dist="FoldedNormal", 
-                          mean=self.att, var=self.attsd**2,
-                          **options)
-        ]
+        if self.artonly:
+            self.inferart = True
+
+        if not self.artonly:
+            self.params = [
+                get_parameter("ftiss", dist="Normal", 
+                            mean=1.5, prior_var=1e6, post_var=1.5, 
+                            post_init=self._init_flow,
+                            **options),
+                get_parameter("delttiss", dist="FoldedNormal", 
+                            mean=self.att, var=self.attsd**2,
+                            post_init=self._init_delt,
+                            **options)
+            ]
+
         if self.infert1:
             self.params.append(
                 get_parameter("t1", mean=1.3, var=0.01, **options)
             )
+
         if self.inferart:
             self.leadscale = 0.01
             self.params.append(
@@ -78,7 +94,8 @@ class AslRestModel(Model):
             )
             self.params.append(
                 get_parameter("deltblood", dist="FoldedNormal", 
-                              mean=self.att - 0.3, var=self.attsd**2,
+                              mean=self.artt, var=self.arttsd**2,
+                              post_init=self._init_delt,
                               **options)
             )
 
@@ -98,31 +115,33 @@ class AslRestModel(Model):
         """
         # Extract parameter tensors
         t = self.log_tf(tpts, name="tpts", shape=True)
-        ftiss = self.log_tf(params[0], name="ftiss", shape=True)
-        delt = self.log_tf(params[1], name="delt", shape=True)
+        param_idx = 0
+        if not self.artonly:
+            ftiss = self.log_tf(params[param_idx], name="ftiss", shape=True)
+            delt = self.log_tf(params[param_idx], name="delt", shape=True)
+            param_idx += 2
 
-        opt_param_idx = 2
         if self.infert1:
-            t1 = self.log_tf(params[opt_param_idx], name="t1", shape=True)
-            opt_param_idx += 1
+            t1 = self.log_tf(params[param_idx], name="t1", shape=True)
+            param_idx += 1
         else:
             t1 = self.t1
 
         if self.inferart:
-            fblood = self.log_tf(params[opt_param_idx], name="fblood", shape=True, force=False)
-            deltblood = self.log_tf(params[opt_param_idx+1], name="deltblood", shape=True, force=False)
-            opt_param_idx += 2
-        else:
-            fblood = 0
-            deltblood = delt
+            fblood = self.log_tf(params[param_idx], name="fblood", shape=True, force=False)
+            deltblood = self.log_tf(params[param_idx+1], name="deltblood", shape=True, force=False)
+            param_idx += 2
 
         # Extra parameters may be required by subclasses, e.g. dispersion parameters
-        extra_params = params[opt_param_idx:]
+        extra_params = params[param_idx:]
 
-        signal = self.log_tf(self.tissue_signal(t, ftiss, delt, t1, extra_params), name="tiss_signal")
+        if not self.artonly:
+            signal = self.log_tf(self.tissue_signal(t, ftiss, delt, t1, extra_params), name="tiss_signal")
+        else:
+            signal = tf.zeros(tf.shape(t), dtype=tf.float32)
 
         if self.inferart:
-            signal += self.log_tf(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
+            signal = signal + self.log_tf(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
 
         return self.log_tf(signal, name="asl_signal")
 
@@ -207,14 +226,11 @@ class AslRestModel(Model):
             raise ValueError("ASL model configured with %i time points, but data has %i" % (len(self.tis)*self.repeats, self.data_model.n_tpts))
 
         # FIXME assuming grouped by TIs/PLDs
-        if self.slicedt > 0:
-            # Generate voxelwise timings array using the slicedt value
-            t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts])
-            for z in range(self.data_model.shape[2]):
-                t[:, :, z, :] = np.array(sum([[ti + z*self.slicedt] * self.repeats for ti in self.tis], []))
-        else:
-            # Timings are the same for all voxels
-            t = np.array(sum([[ti] * self.repeats for ti in self.tis], []))
+        # Generate voxelwise timings array using the slicedt value
+        t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts])
+        for z in range(self.data_model.shape[2]):
+            t[:, :, z, :] = np.array(sum([[ti + z*self.slicedt] * self.repeats for ti in self.tis], []))
+        
         return t.reshape(-1, self.data_model.n_tpts)
 
     def __str__(self):
@@ -231,3 +247,16 @@ class AslRestModel(Model):
         Initial value for the fblood parameter
         """
         return tf.math.maximum(tf.reduce_max(data, axis=1), 0.1), None
+
+    def _init_delt(self, _param, t, data):
+        """
+        Initial value for the delttiss parameter
+        """
+        if self.att_init == "max":
+            t = self.log_tf(t, name="t", force=True, shape=True)
+            data = self.log_tf(data, name="data", force=True, shape=True)
+            max_idx = self.log_tf(tf.expand_dims(tf.math.argmax(data, axis=1), -1), shape=True, force=True, name="max_idx")
+            time_max = self.log_tf(tf.squeeze(tf.gather(t, max_idx, axis=1, batch_dims=1), axis=-1), shape=True, force=True, name="time_max")
+            return time_max - self.tau, None
+        else:
+            return None, None
