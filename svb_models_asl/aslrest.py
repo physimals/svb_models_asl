@@ -78,7 +78,7 @@ class AslRestModel(Model):
                             mean=1.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
                             **options),
-                get_parameter("delttiss", dist="FoldedNormal", 
+                get_parameter("delttiss", dist="Normal", 
                             mean=self.att, var=self.attsd**2,
                             post_init=self._init_delt,
                             **options)
@@ -99,7 +99,7 @@ class AslRestModel(Model):
                               **options)
             )
             self.params.append(
-                get_parameter("deltblood", dist="FoldedNormal", 
+                get_parameter("deltblood", dist="Normal", 
                               mean=self.artt, var=self.arttsd**2,
                               post_init=self._init_delt,
                               **options)
@@ -124,8 +124,9 @@ class AslRestModel(Model):
         param_idx = 0
         if not self.artonly:
             ftiss = self.log_tf(params[param_idx], name="ftiss", shape=True)
+            param_idx += 1
             delt = self.log_tf(params[param_idx], name="delt", shape=True)
-            param_idx += 2
+            param_idx += 1
 
         if self.infert1:
             t1 = self.log_tf(params[param_idx], name="t1", shape=True)
