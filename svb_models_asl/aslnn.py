@@ -19,7 +19,11 @@ from sklearn.metrics import r2_score
 from svb import __version__
 from svb.model import Model, ModelOption, ValueList
 from .aslrest import AslRestModel
-from svb import DataModel
+try:
+    from svb import VolumetricModel
+except ImportError:
+    from svb import DataModel as VolumetricModel
+    
 from svb.parameter import get_parameter
 import svb.dist as dist
 import svb.prior as prior
@@ -185,7 +189,7 @@ class AslNNModel(Model):
         # Generate training data using ftiss=1 (since this is just
         # a scaling factor and is imposed independently of the NN)
         sig = np.zeros((1, len(self.tis)), dtype=np.float32)
-        data_model = DataModel(sig)
+        data_model = VolumetricModel(sig)
         model = AslRestModel(data_model, tis=self.tis, **options)
         tpts = np.random.uniform(1.0, 5.0, size=(n,))
         delttiss = np.random.uniform(0.1, self.train_delttiss_max, size=(n,))
