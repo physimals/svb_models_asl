@@ -24,10 +24,10 @@ class AslRestModel(Model):
     OPTIONS = [
         ModelOption("tau", "Bolus duration", units="s", clargs=("--tau", "--bolus"), type=float, default=1.8),
         ModelOption("casl", "Data is CASL/pCASL", type=bool, default=False),
-        ModelOption("att", "Bolus arrival time", units="s", type=float, default=1.3),
-        ModelOption("attsd", "Bolus arrival time prior std.dev.", units="s", type=float, default=None),
-        ModelOption("artt", "Arterial bolus arrival time", units="s", type=float, default=None),
-        ModelOption("arttsd", "Arterial bolus arrival time prior std.dev.", units="s", type=float, default=None),
+        ModelOption("att", "Bolus arrival time", units="s", clargs=("--bat",), type=float, default=1.3),
+        ModelOption("attsd", "Bolus arrival time prior std.dev.", units="s", clargs=("--batsd",), type=float, default=None),
+        ModelOption("artt", "Arterial bolus arrival time", units="s", clargs=("--batart",), type=float, default=None),
+        ModelOption("arttsd", "Arterial bolus arrival time prior std.dev.", units="s", clargs=("--batartsd",), type=float, default=None),
         ModelOption("t1", "Tissue T1 value", units="s", type=float, default=1.3),
         ModelOption("t1b", "Blood T1 value", units="s", type=float, default=1.65),
         ModelOption("tis", "Inversion times", units="s", type=ValueList(float)),
@@ -57,11 +57,17 @@ class AslRestModel(Model):
         if self.arttsd is None:
             self.arttsd = self.attsd
 
+        # Repeats are supposed to be a list but can be a single number
         if isinstance(self.repeats, int):
             self.repeats = [self.repeats]
+
+        # For now we only support fixed repeats
         if len(self.repeats) == 1:
             # FIXME variable repeats
             self.repeats = self.repeats[0]
+        elif len(self.repeats) > 1 and \
+            any([ r != self.repeats[0] for r in self.repeats ]):
+            raise NotImplementedError("Variable repeats for TIs/PLDs")
 
         if self.artonly:
             self.inferart = True
@@ -230,7 +236,7 @@ class AslRestModel(Model):
         t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts])
         for z in range(self.data_model.shape[2]):
             t[:, :, z, :] = np.array(sum([[ti + z*self.slicedt] * self.repeats for ti in self.tis], []))
-        
+
         return t.reshape(-1, self.data_model.n_tpts)
 
     def __str__(self):
