@@ -237,6 +237,11 @@ class AslRestModel(Model):
         for z in range(self.data_model.shape[2]):
             t[:, :, z, :] = np.array(sum([[ti + z*self.slicedt] * self.repeats for ti in self.tis], []))
 
+        # Time points derived from volumetric data - may need to be transformed
+        # into node space. FIXME 'if' test is hack to enable the code to work 
+        # with or without surface-based infrastructure
+        if hasattr(self.data_model, "voxels_to_nodes_ts"):
+            t = self.data_model.voxels_to_nodes_ts(t)
         return t.reshape(-1, self.data_model.n_tpts)
 
     def __str__(self):
