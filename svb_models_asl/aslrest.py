@@ -233,16 +233,26 @@ class AslRestModel(Model):
             raise ValueError("ASL model configured with %i time points, but data has %i" % (len(self.tis)*self.repeats, self.data_model.n_tpts))
 
         # FIXME assuming grouped by TIs/PLDs
-        # Generate voxelwise timings array using the slicedt value
-        t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts])
+        # Generate timings volume using the slicedt value
+        t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts], dtype=np.float32)
         for z in range(self.data_model.shape[2]):
             t[:, :, z, :] = np.array(sum([[ti + z*self.slicedt] * self.repeats for ti in self.tis], []))
 
-        # Time points derived from volumetric data - may need to be transformed
+        # Unmasked voxel timings
+        t = t[self.data_model.mask_vol > 0]
+
+        # Time points derived from volumetric data need to be transformed
         # into node space. FIXME 'if' test is hack to enable the code to work 
         # with or without surface-based infrastructure
         if hasattr(self.data_model, "voxels_to_nodes_ts"):
-            t = self.data_model.voxels_to_nodes_ts(t.reshape(-1, 1, self.data_model.n_tpts))
+            t = t.reshape(-1, 1, self.data_model.n_tpts)
+            with tf.Session() as sess:
+                t = self.data_model.voxels_to_nodes_ts(t)
+                t = sess.run(t)
+            # HACK to fix the fact that conversion tensors will
+            # be cached in the wrong graph
+            self.data_model.uncache_tensors()
+
         return t.reshape(-1, self.data_model.n_tpts)
 
     def __str__(self):
