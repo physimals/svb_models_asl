@@ -242,7 +242,7 @@ class AslRestModel(Model):
         # into node space. FIXME 'if' test is hack to enable the code to work 
         # with or without surface-based infrastructure
         if hasattr(self.data_model, "voxels_to_nodes_ts"):
-            t = self.data_model.voxels_to_nodes_ts(t)
+            t = self.data_model.voxels_to_nodes_ts(t.reshape(-1, 1, self.data_model.n_tpts))
         return t.reshape(-1, self.data_model.n_tpts)
 
     def __str__(self):
