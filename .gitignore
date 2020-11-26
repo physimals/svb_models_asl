@@ -1,2 +1,6 @@
 .vscode
 _version.py
+build
+dist
+scripts/*out*
+*.egg-info
