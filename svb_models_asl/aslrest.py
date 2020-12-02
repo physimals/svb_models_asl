@@ -242,12 +242,11 @@ class AslRestModel(Model):
         t = t[self.data_model.mask_vol > 0]
 
         # Time points derived from volumetric data need to be transformed
-        # into node space. FIXME 'if' test is hack to enable the code to work 
-        # with or without surface-based infrastructure
-        if hasattr(self.data_model, "voxels_to_nodes_ts"):
+        # into node space.
+        if not self.data_model.is_volumetric:
             t = t.reshape(-1, 1, self.data_model.n_tpts)
             with tf.Session() as sess:
-                t = self.data_model.voxels_to_nodes_ts(t, pv_sum=False)
+                t = self.data_model.voxels_to_nodes_ts(t, edge_correct=False)
                 t = sess.run(tf.identity(t))
             # HACK to fix the fact that conversion tensors will
             # be cached in the wrong graph
