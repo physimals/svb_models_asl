@@ -1,6 +1,6 @@
 .vscode
 _version.py
-*__pycache__*
-build 
-dist 
+build
+dist
+scripts/*out*
 *.egg-info
