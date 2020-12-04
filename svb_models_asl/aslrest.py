@@ -246,7 +246,7 @@ class AslRestModel(Model):
         if not self.data_model.is_volumetric:
             t = t.reshape(-1, 1, self.data_model.n_tpts)
             with tf.Session() as sess:
-                t = self.data_model.voxels_to_nodes_ts(t, edge_correct=False)
+                t = self.data_model.voxels_to_nodes_ts(t, edge_scale=False)
                 t = sess.run(tf.identity(t))
             # HACK to fix the fact that conversion tensors will
             # be cached in the wrong graph
