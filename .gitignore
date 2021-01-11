@@ -4,3 +4,4 @@ build
 dist
 scripts/*out*
 *.egg-info
+*__pycache__*

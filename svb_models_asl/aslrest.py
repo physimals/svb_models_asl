@@ -22,24 +22,47 @@ class AslRestModel(Model):
     """
 
     OPTIONS = [
+
+        # ASL parameters 
         ModelOption("tau", "Bolus duration", units="s", clargs=("--tau", "--bolus"), type=float, default=1.8),
         ModelOption("casl", "Data is CASL/pCASL", type=bool, default=False),
-        ModelOption("att", "Bolus arrival time", units="s", clargs=("--bat",), type=float, default=1.3),
-        ModelOption("attsd", "Bolus arrival time prior std.dev.", units="s", clargs=("--batsd",), type=float, default=None),
-        ModelOption("artt", "Arterial bolus arrival time", units="s", clargs=("--batart",), type=float, default=None),
-        ModelOption("arttsd", "Arterial bolus arrival time prior std.dev.", units="s", clargs=("--batartsd",), type=float, default=None),
-        ModelOption("t1", "Tissue T1 value", units="s", type=float, default=1.3),
-        ModelOption("t1b", "Blood T1 value", units="s", type=float, default=1.65),
         ModelOption("tis", "Inversion times", units="s", type=ValueList(float)),
         ModelOption("plds", "Post-labelling delays (for CASL instead of TIs)", units="s", type=ValueList(float)),
         ModelOption("repeats", "Number of repeats - single value or one per TI/PLD", units="s", type=ValueList(int), default=[1]),
         ModelOption("slicedt", "Increase in TI/PLD per slice", units="s", type=float, default=0),
-        ModelOption("inferart", "Infer arterial component", type=bool),
-        ModelOption("artonly", "Only infer arterial component not tissue", type=bool),
-        ModelOption("infert1", "Infer T1 value", type=bool),
-        ModelOption("pc", "Blood/tissue partition coefficient", type=float, default=0.9),
+
+        # GM tissue properties 
+        ModelOption("t1", "Tissue T1 value", units="s", type=float, default=1.3),
+        ModelOption("att", "Bolus arrival time", units="s", clargs=("--bat",), type=float, default=1.3),
+        ModelOption("attsd", "Bolus arrival time prior std.dev.", units="s", clargs=("--batsd",), type=float, default=None),
         ModelOption("fcalib", "Perfusion value to use in estimation of effective T1", type=float, default=0.01),
+        ModelOption("pc", "Blood/tissue partition coefficient. If only inferring on one tissue, default is 0.9; if inferring on both GM/WM default is 0.98/0.8 respectively. See --pcwm", type=float, default=None),
+
+        # WM tissue properties 
+        ModelOption("incwm", "Include WM parameters", default=False),
+        ModelOption("fwm", "WM perfusion", type=float, default=0),
+        ModelOption("attwm", "WM arterial transit time", clargs="--batwm", type=float, default=1.6),
+        ModelOption("t1wm", "WM T1 value", units="s", type=float, default=1.1),
+        ModelOption("pcwm", "WM parition coefficient. See --pc", type=float, default=0.8),
+        ModelOption("fcalibwm", "WM perfusion value to use in estimation of effective T1", type=float, default=0.003),
+
+        # Blood / arterial properties 
+        ModelOption("t1b", "Blood T1 value", units="s", type=float, default=1.65),
+        ModelOption("artt", "Arterial bolus arrival time", units="s", clargs=("--batart",), type=float, default=None),
+        ModelOption("arttsd", "Arterial bolus arrival time prior std.dev.", units="s", clargs=("--batartsd",), type=float, default=None),
+
+        # Inference options 
+        ModelOption("artonly", "Only infer arterial component not tissue", type=bool),
+        ModelOption("inferart", "Infer arterial component", type=bool),
+        ModelOption("infert1", "Infer T1 value", type=bool),
         ModelOption("att_init", "Initialization method for ATT (max=max signal - bolus duration)", default=""),
+        ModelOption("pvcorr", "Perform PVEc (shortcut for incwm, inferwm)", default=False),
+        ModelOption("inferwm", "Infer WM parameters", default=False),
+
+        # PVE options 
+        ModelOption("pvgm", "GM partial volume", type=float, default=1.0),
+        ModelOption("pvwm", "WM partial volume", type=float, default=0.0),
+
     ]
 
     def __init__(self, data_model, **options):
@@ -69,6 +92,37 @@ class AslRestModel(Model):
             any([ r != self.repeats[0] for r in self.repeats ]):
             raise NotImplementedError("Variable repeats for TIs/PLDs")
 
+        if self.pvcorr: 
+            self.incwm = True
+            self.inferwm = True 
+
+            # Ensure PVs match data size, whether provided as an array, 
+            # single scalar, or path to file. 
+            if isinstance(self.pvgm, (float,int)):
+                gm = np.array(self.pvgm) 
+                wm = np.array(self.pvwm)
+            else:
+                gm = data_model._get_data(self.pvgm)[1].flatten()
+                wm = data_model._get_data(self.pvwm)[1].flatten()
+
+            if gm.size > self.data_model.n_nodes: 
+                gm = gm[data_model.mask_flattened]
+                wm = wm[data_model.mask_flattened]
+
+            ones = np.ones(data_model.n_nodes)
+            self.pvgm = (ones * gm).astype(np.float32)
+            self.pvwm = (ones * wm).astype(np.float32)
+
+        # If no pc provided, default depends on inclusion of WM or not. 
+        if self.pc is None: 
+            if self.incwm: 
+                self.pc = 0.98
+            else: 
+                self.pc = 0.9
+
+        if self.incwm:
+            self.pc = 0.98
+
         if self.artonly:
             self.inferart = True
 
@@ -84,10 +138,27 @@ class AslRestModel(Model):
                             **options)
             ]
 
+            if self.inferwm: 
+                self.params += [
+                    get_parameter("fwm", dist="Normal", 
+                            mean=0.5, prior_var=1e6, post_var=1.5, 
+                            post_init=self._init_flow,
+                            **options),
+                    get_parameter("deltwm", dist="Normal", 
+                            mean=self.attwm, var=self.attsd**2,
+                            post_init=self._init_delt,
+                            **options)
+                ]
+
         if self.infert1:
             self.params.append(
-                get_parameter("t1", mean=1.3, var=0.01, **options)
+                get_parameter("t1", mean=self.t1, var=0.01, **options)
             )
+
+            if self.inferwm:
+                self.params.append(
+                    get_parameter("t1wm", mean=self.t1wm, var=0.01, **options)
+                )
 
         if self.inferart:
             self.leadscale = 0.01
@@ -127,12 +198,25 @@ class AslRestModel(Model):
             param_idx += 1
             delt = self.log_tf(params[param_idx], name="delt", shape=True)
             param_idx += 1
-
+            if self.inferwm:
+                fwm = self.log_tf(params[param_idx], name="fwm", shape=True)
+                param_idx += 1
+                deltwm = self.log_tf(params[param_idx], name="deltwm", shape=True)
+                param_idx += 1   
+            else: 
+                fwm = self.fwm 
+                deltwm = self.attwm              
+    
         if self.infert1:
             t1 = self.log_tf(params[param_idx], name="t1", shape=True)
             param_idx += 1
+            if self.inferwm: 
+                t1wm = self.log_tf(params[param_idx], name="t1wm", shape=True)
+                param_idx += 1 
+
         else:
             t1 = self.t1
+            t1wm = self.t1wm
 
         if self.inferart:
             fblood = self.log_tf(params[param_idx], name="fblood", shape=True, force=False)
@@ -140,35 +224,56 @@ class AslRestModel(Model):
             param_idx += 2
 
         # Extra parameters may be required by subclasses, e.g. dispersion parameters
+        # FIXME: will need to separate out WM extra params and GM extra params... 
         extra_params = params[param_idx:]
 
+        # PV estimates are rank-1, but params may be rank-2 or 3, so expand dims
+        # to match these before doing multiplication.
         if not self.artonly:
-            signal = self.log_tf(self.tissue_signal(t, ftiss, delt, t1, extra_params), name="tiss_signal")
+            gm = self.pvgm
+            while gm.ndim < len(ftiss.shape): gm = gm[...,None]
+            gmsignal = self.log_tf(
+                gm * self.tissue_signal(t, ftiss, delt, t1, self.fcalib, extra_params), 
+                name="tiss_signal")
+            if self.incwm: 
+                wm = self.pvwm
+                while wm.ndim < len(fwm.shape): wm = wm[...,None]
+                wmsignal = self.log_tf(
+                    wm * self.tissue_signal(t, fwm, deltwm, t1wm, self.fcalibwm, extra_params),
+                    name="wm_tiss_signal")
+                signal = wmsignal + gmsignal 
+            else: 
+                signal = gmsignal 
+
         else:
             signal = tf.zeros(tf.shape(t), dtype=tf.float32)
 
         if self.inferart:
-            signal = signal + self.log_tf(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
+            signal += self.log_tf(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
 
         return self.log_tf(signal, name="asl_signal")
 
-    def tissue_signal(self, t, ftiss, delt, t1, extra_params):
+    def tissue_signal(self, t, ftiss, delt, t1, fcalib, extra_params):
         """
         PASL/pCASL kinetic model for tissue
         """
+
+        if (extra_params != []) and (extra_params.shape[0] > 0): 
+            raise NotImplementedError("Extra tissue parameters not set up yet")
+
         # Boolean masks indicating which voxel-timepoints are during the
         # bolus arrival and which are after
         post_bolus = self.log_tf(tf.greater(t, tf.add(self.tau, delt), name="post_bolus"), shape=True)
         during_bolus = tf.logical_and(tf.greater(t, delt), tf.logical_not(post_bolus))
 
         # Rate constants
-        t1_app = 1 / (1 / t1 + self.fcalib / self.pc)
+        t1_app = 1 / (1 / t1 + fcalib / self.pc)
 
         # Calculate signal
         if self.casl:
             # CASL kinetic model
             factor = 2 * t1_app * tf.exp(-delt / self.t1b)
-            during_bolus_signal =  factor * (1 - tf.exp(-(t - delt) / t1_app))
+            during_bolus_signal = factor * (1 - tf.exp(-(t - delt) / t1_app))
             post_bolus_signal = factor * tf.exp(-(t - self.tau - delt) / t1_app) * (1 - tf.exp(-self.tau / t1_app))
         else:
             # PASL kinetic model
@@ -261,13 +366,33 @@ class AslRestModel(Model):
         """
         Initial value for the flow parameter
         """
-        return tf.math.maximum(tf.reduce_max(data, axis=1), 0.1), None
+        # return f, None 
+        if not self.pvcorr:
+            f = tf.math.maximum(tf.reduce_max(data, axis=1), 0.1)
+            return f, None
+        else:
+            # Do a quick edge correction to up-scale signal in edge voxels 
+            # Guard against small number division 
+            pvsum = self.pvgm + self.pvwm
+            edge_data = data / np.maximum(pvsum, 0.3)[:,None]
+
+            # Intialisation for PVEc: assume a CBF ratio of 3:1, 
+            # let g = GM PV, w = WM PV = (1 - g), f = raw CBF, 
+            # x = WM CBF. Then, wx + 3gx = f => x = 3f / (1 + 2g)
+            f = tf.math.maximum(tf.reduce_max(edge_data, axis=1), 0.1)
+            fwm = f / (1 + 2*self.pvgm)
+            if _param.name == 'fwm':
+                return fwm, None
+            else: 
+                return 3 * fwm, None 
+
 
     def _init_fblood(self, _param, _t, data):
         """
         Initial value for the fblood parameter
         """
         return tf.math.maximum(tf.reduce_max(data, axis=1), 0.1), None
+
 
     def _init_delt(self, _param, t, data):
         """
@@ -278,6 +403,10 @@ class AslRestModel(Model):
             data = self.log_tf(data, name="data", force=True, shape=True)
             max_idx = self.log_tf(tf.expand_dims(tf.math.argmax(data, axis=1), -1), shape=True, force=True, name="max_idx")
             time_max = self.log_tf(tf.squeeze(tf.gather(t, max_idx, axis=1, batch_dims=1), axis=-1), shape=True, force=True, name="time_max")
-            return time_max - self.tau, None
+
+            if _param.name == 'fwm': 
+                return time_max + 0.3 - self.tau, None
+            else: 
+                return time_max - self.tau, None
         else:
             return None, None
