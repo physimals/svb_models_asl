@@ -36,14 +36,14 @@ class AslRestModel(Model):
         ModelOption("att", "Bolus arrival time", units="s", clargs=("--bat",), type=float, default=1.3),
         ModelOption("attsd", "Bolus arrival time prior std.dev.", units="s", clargs=("--batsd",), type=float, default=None),
         ModelOption("fcalib", "Perfusion value to use in estimation of effective T1", type=float, default=0.01),
-        ModelOption("pc", "Blood/tissue partition coefficient", type=float, default=0.9),
+        ModelOption("pc", "Blood/tissue partition coefficient. If only inferring on one tissue, default is 0.9; if inferring on both GM/WM default is 0.98/0.8 respectively. See --pcwm", type=float, default=None),
 
         # WM tissue properties 
         ModelOption("incwm", "Include WM parameters", default=False),
         ModelOption("fwm", "WM perfusion", type=float, default=0),
         ModelOption("attwm", "WM arterial transit time", clargs="--batwm", type=float, default=1.6),
         ModelOption("t1wm", "WM T1 value", units="s", type=float, default=1.1),
-        ModelOption("pcwm", "WM parition coefficient", type=float, default=0.8),
+        ModelOption("pcwm", "WM parition coefficient. See --pc", type=float, default=0.8),
         ModelOption("fcalibwm", "WM perfusion value to use in estimation of effective T1", type=float, default=0.003),
 
         # Blood / arterial properties 
@@ -56,12 +56,10 @@ class AslRestModel(Model):
         ModelOption("inferart", "Infer arterial component", type=bool),
         ModelOption("infert1", "Infer T1 value", type=bool),
         ModelOption("att_init", "Initialization method for ATT (max=max signal - bolus duration)", default=""),
-        ModelOption("pvcorr", "Perform PVEc (incpve, incwm, inferwm)", default=False),
+        ModelOption("pvcorr", "Perform PVEc (shortcut for incwm, inferwm)", default=False),
         ModelOption("inferwm", "Infer WM parameters", default=False),
-        # FIXME: there is surely redundancy between pvcorr, incpve, incwm, inferwm?
 
         # PVE options 
-        ModelOption("incpve", "Include PV effects", default=False),
         ModelOption("pvgm", "GM partial volume", type=float, default=1.0),
         ModelOption("pvwm", "WM partial volume", type=float, default=0.0),
 
@@ -94,10 +92,7 @@ class AslRestModel(Model):
             any([ r != self.repeats[0] for r in self.repeats ]):
             raise NotImplementedError("Variable repeats for TIs/PLDs")
 
-        # FIXME: as pointed out in the C++ version of this, pvcorr seems to just
-        # be shorthand for including PVE and inferring on WM 
         if self.pvcorr: 
-            self.incpve = True 
             self.incwm = True
             self.inferwm = True 
 
@@ -118,10 +113,13 @@ class AslRestModel(Model):
             self.pvgm = (ones * gm).astype(np.float32)
             self.pvwm = (ones * wm).astype(np.float32)
 
-        # FIXME: as per C++, pc for a naive model is 0.9, whereas
-        # pc for a mixed GM/WM model is 0.98/0.8 respectively. 
-        # But what if the user wants to include WM, but set GM pc != 0.98?
-        # this block will override their value
+        # If no pc provided, default depends on inclusion of WM or not. 
+        if self.pc is None: 
+            if self.incwm: 
+                self.pc = 0.98
+            else: 
+                self.pc = 0.9
+
         if self.incwm:
             self.pc = 0.98
 
@@ -406,7 +404,6 @@ class AslRestModel(Model):
             max_idx = self.log_tf(tf.expand_dims(tf.math.argmax(data, axis=1), -1), shape=True, force=True, name="max_idx")
             time_max = self.log_tf(tf.squeeze(tf.gather(t, max_idx, axis=1, batch_dims=1), axis=-1), shape=True, force=True, name="time_max")
 
-            # FIXME: hardcoded shift for WM ATT by 0.3s here. 
             if _param.name == 'fwm': 
                 return time_max + 0.3 - self.tau, None
             else: 
