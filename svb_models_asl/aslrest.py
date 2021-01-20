@@ -230,13 +230,13 @@ class AslRestModel(Model):
         # PV estimates are rank-1, but params may be rank-2 or 3, so expand dims
         # to match these before doing multiplication.
         if not self.artonly:
-            gm = self.pvgm
+            gm = np.asarray(self.pvgm)
             while gm.ndim < len(ftiss.shape): gm = gm[...,None]
             gmsignal = self.log_tf(
                 gm * self.tissue_signal(t, ftiss, delt, t1, self.fcalib, extra_params), 
                 name="tiss_signal")
             if self.incwm: 
-                wm = self.pvwm
+                wm = np.asarray(self.pvwm)
                 while wm.ndim < len(fwm.shape): wm = wm[...,None]
                 wmsignal = self.log_tf(
                     wm * self.tissue_signal(t, fwm, deltwm, t1wm, self.fcalibwm, extra_params),
