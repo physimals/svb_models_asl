@@ -98,30 +98,33 @@ class AslRestModel(Model):
 
             # Ensure PVs match data size, whether provided as an array, 
             # single scalar, or path to file. 
-            if isinstance(self.pvgm, (float,int)):
-                gm = np.array(self.pvgm) 
-                wm = np.array(self.pvwm)
-            else:
-                gm = data_model._get_data(self.pvgm)[1].flatten()
-                wm = data_model._get_data(self.pvwm)[1].flatten()
+            try: 
+                self.pvgm = data_model._get_data(self.pvgm)[1].flatten()
+                self.pvwm = data_model._get_data(self.pvwm)[1].flatten()
+                if self.pvgm.size == self.data_model.mask_flattened.size: 
+                    self.pvgm = self.pvgm[self.data_model.mask_flattened]
+                    self.pvwm = self.pvwm[self.data_model.mask_flattened]
+            except: 
+                if not isinstance(self.pvgm, (int,float)): 
+                    raise ValueError("Could not interpret PV estimates")
 
-            if gm.size > self.data_model.n_nodes: 
-                gm = gm[data_model.mask_flattened]
-                wm = wm[data_model.mask_flattened]
+        if self.incwm and (np.array(self.pvgm + self.pvwm) > 1).any():
+            raise ValueError("At least one GM and WM PV sum to > 1")
 
-            ones = np.ones(data_model.n_nodes)
-            self.pvgm = (ones * gm).astype(np.float32)
-            self.pvwm = (ones * wm).astype(np.float32)
+        # In surface/hybrid mode, PVE are accounted for in the projection matrix,
+        # so we hardcode both tissue PVs to unity here. 
+        if not self.data_model.is_volumetric:
+            self.pvgm = 1.0 
+            self.pvwm = 1.0 
 
         # If no pc provided, default depends on inclusion of WM or not. 
+        # Also depends what mode we're in - PVEc is implied in surface/hybrid
+        # mode, so set a 'pure GM' value 
         if self.pc is None: 
-            if self.incwm: 
+            if self.incwm or (not self.data_model.is_volumetric): 
                 self.pc = 0.98
             else: 
                 self.pc = 0.9
-
-        if self.incwm:
-            self.pc = 0.98
 
         if self.artonly:
             self.inferart = True
@@ -138,6 +141,37 @@ class AslRestModel(Model):
                             **options)
             ]
 
+            # Set up the PC,T1,PV tensors that correspond with the parameter
+            # tensors in a node-wise manner. The default case below sets up for 
+            # volumetric mode without PVEc, which just passes-through the T1, 
+            # PC and GM PV values (NB GM PV defaults to 1 in non-PVEc mode). 
+            # We just cast up all values to a full-sized vector by multiplying with ones 
+            ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
+            t1_full = self.t1 * ones
+            pc_full = self.pc * ones
+            pvgm_full = self.pvgm * ones
+            fcalib_full = self.fcalib * ones
+            
+            # In surface/hybrid mode, we concatenate all nodes of different tissue types
+            # into a single tensor. The data model knows the mapping between node numbers
+            # and corresponding tissue type, so we use that to write in the correct tissue
+            # properties. 
+            if not self.data_model.is_volumetric:
+                properties = { 'GM': (self.t1, self.pc, self.pvgm, self.fcalib), 
+                               'WM': (self.t1wm, self.pcwm, self.pvwm, self.fcalibwm) }
+                for node_slice, tiss in self.data_model.node_labels: 
+                    t1, pc, pv, fc = properties[tiss]
+                    t1_full[node_slice] = t1
+                    pc_full[node_slice] = pc
+                    pvgm_full[node_slice] = pv
+                    fcalib_full[node_slice] = fc
+
+            # Overwrite back onto the self object. 
+            self.t1 = t1_full
+            self.pc = pc_full
+            self.pvgm = pvgm_full
+            self.fcalib = fcalib_full
+
             if self.inferwm: 
                 self.params += [
                     get_parameter("fwm", dist="Normal", 
@@ -149,6 +183,13 @@ class AslRestModel(Model):
                             post_init=self._init_delt,
                             **options)
                 ]
+
+                # Volumetric PVEc mode: we carry 2 complete sets of full-size tensors
+                # around, one set for GM (set up above), this set for WM 
+                self.t1wm = self.t1wm * ones
+                self.pcwm = self.pcwm * ones
+                self.pvwm = self.pvwm * ones
+                self.fcalibwm = self.fcalibwm * ones
 
         if self.infert1:
             self.params.append(
@@ -227,33 +268,34 @@ class AslRestModel(Model):
         # FIXME: will need to separate out WM extra params and GM extra params... 
         extra_params = params[param_idx:]
 
-        # PV estimates are rank-1, but params may be rank-2 or 3, so expand dims
-        # to match these before doing multiplication.
+        # In non-PVEc volumetric mode, all signal is assumed to come from 'GM' (even
+        # though we know the real tissue type will actually be mixed).
+        # In surface/hybrid mode, nodes for all tissues are contained within the same
+        # tensors. In either case, we only need to evaluate the first block to get
+        # the tissue signal 
         if not self.artonly:
-            gm = np.asarray(self.pvgm)
-            while gm.ndim < len(ftiss.shape): gm = gm[...,None]
-            gmsignal = self.log_tf(
-                gm * self.tissue_signal(t, ftiss, delt, t1, self.fcalib, extra_params), 
-                name="tiss_signal")
-            if self.incwm: 
-                wm = np.asarray(self.pvwm)
-                while wm.ndim < len(fwm.shape): wm = wm[...,None]
-                wmsignal = self.log_tf(
-                    wm * self.tissue_signal(t, fwm, deltwm, t1wm, self.fcalibwm, extra_params),
-                    name="wm_tiss_signal")
-                signal = wmsignal + gmsignal 
-            else: 
-                signal = gmsignal 
+            signal = self.log_tf(self.tissue_signal(t, ftiss, delt, t1, self.pc, 
+                        self.fcalib, self.pvgm, extra_params), name="tiss_signal")
+
+            # The only case where we explicitly add a WM contribution is when doing
+            # PVEc in volumetric mode (WM has already been accounted for in the above
+            # block in surface/hybrid mode)
+            if (self.data_model.is_volumetric) and (self.incwm): 
+                wmsignal = self.log_tf(self.tissue_signal(t, fwm, deltwm, t1wm, self.pcwm, 
+                                        self.fcalibwm, self.pvwm, extra_params),
+                                        name="wm_tiss_signal")
+                signal += wmsignal
 
         else:
             signal = tf.zeros(tf.shape(t), dtype=tf.float32)
 
         if self.inferart:
+            # FIMXE: is this going to work in surface/hybrid mode?
             signal += self.log_tf(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
 
         return self.log_tf(signal, name="asl_signal")
 
-    def tissue_signal(self, t, ftiss, delt, t1, fcalib, extra_params):
+    def tissue_signal(self, t, ftiss, delt, t1, pc, fcalib, pv=1.0, extra_params=[]):
         """
         PASL/pCASL kinetic model for tissue
         """
@@ -261,13 +303,23 @@ class AslRestModel(Model):
         if (extra_params != []) and (extra_params.shape[0] > 0): 
             raise NotImplementedError("Extra tissue parameters not set up yet")
 
+        # If these variables are np arrays, they may be under-sized compared to t,
+        # so expand them up (tensorflow is very fussy about broadcasting)
+        ndim = max([len(t.shape), len(ftiss.shape)])
+        if isinstance(ftiss, np.ndarray): ftiss = self.expand_dims(ftiss, ndim)
+        if isinstance(delt, np.ndarray): delt = self.expand_dims(delt, ndim)
+        if isinstance(t1, np.ndarray): t1 = self.expand_dims(t1, ndim)
+        if isinstance(pc, np.ndarray): pc = self.expand_dims(pc, ndim)
+        if isinstance(fcalib, np.ndarray): fcalib = self.expand_dims(fcalib, ndim)
+        if isinstance(pv, np.ndarray): pv = self.expand_dims(pv, ndim)
+
         # Boolean masks indicating which voxel-timepoints are during the
         # bolus arrival and which are after
         post_bolus = self.log_tf(tf.greater(t, tf.add(self.tau, delt), name="post_bolus"), shape=True)
         during_bolus = tf.logical_and(tf.greater(t, delt), tf.logical_not(post_bolus))
 
         # Rate constants
-        t1_app = 1 / (1 / t1 + fcalib / self.pc)
+        t1_app = 1 / (1 / t1 + fcalib / pc)
 
         # Calculate signal
         if self.casl:
@@ -292,7 +344,7 @@ class AslRestModel(Model):
         signal = tf.where(during_bolus, during_bolus_signal, signal)
         signal = tf.where(post_bolus, post_bolus_signal, signal)
 
-        return ftiss*signal
+        return pv * ftiss * signal
 
     def art_signal(self, t, fblood, deltblood, extra_params):
         """
@@ -410,3 +462,27 @@ class AslRestModel(Model):
                 return time_max - self.tau, None
         else:
             return None, None
+
+    def expand_dims(self, array, ndim):
+        while array.ndim < ndim: 
+            array = array[...,None]
+        return array 
+
+    def ensure_fullsize(self, value):
+        # Ensure PVs match data size, whether provided as an array
+        # single scalar, or path to file. 
+        if isinstance(value, tf.Tensor):
+            # do the same set of casts here
+            raise RuntimeError("cast the tf object")
+
+        if isinstance(value, (float,int)):
+            value = np.array(value) 
+
+        if isinstance(value, np.ndarray):
+            if value.size == self.data_model.mask_flattened.size:
+                value = value[self.data_model.mask_flattened]
+
+        ones = np.ones(self.data_model.n_nodes)
+        value = (ones * value).astype(np.float32)
+        return value 
+        
