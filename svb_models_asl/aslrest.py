@@ -73,6 +73,9 @@ class AslRestModel(Model):
         if self.tis is None and self.plds is None:
             raise ValueError("Either TIs or PLDs must be given")
 
+        # Only infer ATT with multi-time data 
+        self.inferatt = (len(self.tis) > 1)
+
         if self.attsd is None:
             self.attsd = 1.0 if len(self.tis) > 1 else 0.1
         if self.artt is None:
@@ -129,24 +132,31 @@ class AslRestModel(Model):
         if self.artonly:
             self.inferart = True
 
+        # This is used for casting up various values to full-sized vectors, 
+        # which ensures shape compatability in tf 
+        ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
+
         if not self.artonly:
             self.params = [
                 get_parameter("ftiss", dist="Normal", 
                             mean=1.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
-                            **options),
-                get_parameter("delttiss", dist="Normal", 
-                            mean=self.att, var=self.attsd**2,
-                            post_init=self._init_delt,
                             **options)
             ]
+            if self.inferatt: 
+                self.params.append(
+                    get_parameter("delttiss", dist="Normal", 
+                                mean=self.att, var=self.attsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                    )
+            else: 
+                self.att *= ones 
 
             # Set up the PC,T1,PV tensors that correspond with the parameter
             # tensors in a node-wise manner. The default case below sets up for 
             # volumetric mode without PVEc, which just passes-through the T1, 
             # PC and GM PV values (NB GM PV defaults to 1 in non-PVEc mode). 
-            # We just cast up all values to a full-sized vector by multiplying with ones 
-            ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
             t1_full = self.t1 * ones
             pc_full = self.pc * ones
             pvgm_full = self.pvgm * ones
@@ -173,16 +183,21 @@ class AslRestModel(Model):
             self.fcalib = fcalib_full
 
             if self.inferwm: 
-                self.params += [
+                self.params.append(
                     get_parameter("fwm", dist="Normal", 
                             mean=0.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
-                            **options),
-                    get_parameter("deltwm", dist="Normal", 
-                            mean=self.attwm, var=self.attsd**2,
-                            post_init=self._init_delt,
                             **options)
-                ]
+                )
+                if self.inferatt:
+                    self.params.append(
+                        get_parameter("deltwm", dist="Normal", 
+                                mean=self.attwm, var=self.attsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                    )
+                else: 
+                    self.attwm *= ones 
 
                 # Volumetric PVEc mode: we carry 2 complete sets of full-size tensors
                 # around, one set for GM (set up above), this set for WM 
@@ -210,12 +225,13 @@ class AslRestModel(Model):
                               prior_type="A",
                               **options)
             )
-            self.params.append(
-                get_parameter("deltblood", dist="Normal", 
-                              mean=self.artt, var=self.arttsd**2,
-                              post_init=self._init_delt,
-                              **options)
-            )
+            if self.inferatt:
+                self.params.append(
+                    get_parameter("deltblood", dist="Normal", 
+                                mean=self.artt, var=self.arttsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                )
 
     def evaluate(self, params, tpts):
         """
@@ -231,21 +247,37 @@ class AslRestModel(Model):
         :return: [W, S, N] tensor containing model output at the specified time values
                  and for each time value using the specified parameter values
         """
+
+        n_params = len(params) if isinstance(params, list) else params.get_shape().as_list()[0]
+        if n_params != len(self.params):
+            raise ValueError(f"Model set up to infer {len(self.params)} parameters; "
+                "this many parameter arrays must be supplied")
+
         # Extract parameter tensors
         t = self.log_tf(tpts, name="tpts", shape=True)
         param_idx = 0
         if not self.artonly:
             ftiss = self.log_tf(params[param_idx], name="ftiss", shape=True)
             param_idx += 1
-            delt = self.log_tf(params[param_idx], name="delt", shape=True)
-            param_idx += 1
+
+            if self.inferatt:
+                delt = self.log_tf(params[param_idx], name="delt", shape=True)
+                param_idx += 1
+            else: 
+                delt = self.att 
+        
             if self.inferwm:
                 fwm = self.log_tf(params[param_idx], name="fwm", shape=True)
                 param_idx += 1
-                deltwm = self.log_tf(params[param_idx], name="deltwm", shape=True)
-                param_idx += 1   
+                
+                if self.inferatt:
+                    deltwm = self.log_tf(params[param_idx], name="deltwm", shape=True)
+                    param_idx += 1   
+                else: 
+                    deltwm = self.attwm 
+
             else: 
-                fwm = self.fwm 
+                fwm = self.fwm
                 deltwm = self.attwm              
     
         if self.infert1:
