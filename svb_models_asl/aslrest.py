@@ -150,8 +150,6 @@ class AslRestModel(Model):
                                 post_init=self._init_delt,
                                 **options)
                     )
-            else: 
-                self.att *= ones 
 
             # Set up the PC,T1,PV tensors that correspond with the parameter
             # tensors in a node-wise manner. The default case below sets up for 
@@ -161,16 +159,18 @@ class AslRestModel(Model):
             pc_full = self.pc * ones
             pvgm_full = self.pvgm * ones
             fcalib_full = self.fcalib * ones
+            att_full = self.att * ones 
             
             # In surface/hybrid mode, we concatenate all nodes of different tissue types
             # into a single tensor. The data model knows the mapping between node numbers
             # and corresponding tissue type, so we use that to write in the correct tissue
             # properties. 
             if not self.data_model.is_volumetric:
-                properties = { 'GM': (self.t1, self.pc, self.pvgm, self.fcalib), 
-                               'WM': (self.t1wm, self.pcwm, self.pvwm, self.fcalibwm) }
+                properties = { 'GM': (self.att, self.t1, self.pc, self.pvgm, self.fcalib), 
+                               'WM': (self.attwm, self.t1wm, self.pcwm, self.pvwm, self.fcalibwm) }
                 for node_slice, tiss in self.data_model.node_labels: 
-                    t1, pc, pv, fc = properties[tiss]
+                    att, t1, pc, pv, fc = properties[tiss]
+                    att_full[node_slice] = att
                     t1_full[node_slice] = t1
                     pc_full[node_slice] = pc
                     pvgm_full[node_slice] = pv
@@ -181,6 +181,7 @@ class AslRestModel(Model):
             self.pc = pc_full
             self.pvgm = pvgm_full
             self.fcalib = fcalib_full
+            self.att = att_full
 
             if self.inferwm: 
                 self.params.append(
@@ -196,8 +197,6 @@ class AslRestModel(Model):
                                 post_init=self._init_delt,
                                 **options)
                     )
-                else: 
-                    self.attwm *= ones 
 
                 # Volumetric PVEc mode: we carry 2 complete sets of full-size tensors
                 # around, one set for GM (set up above), this set for WM 
@@ -205,6 +204,7 @@ class AslRestModel(Model):
                 self.pcwm = self.pcwm * ones
                 self.pvwm = self.pvwm * ones
                 self.fcalibwm = self.fcalibwm * ones
+                self.attwm *= ones 
 
         if self.infert1:
             self.params.append(
