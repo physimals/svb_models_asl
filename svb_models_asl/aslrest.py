@@ -9,7 +9,7 @@ except ImportError:
 import numpy as np
 
 from svb.model import Model, ModelOption
-from svb.utils import ValueList
+from svb.utils import ValueList, NP_DTYPE
 from svb.parameter import get_parameter
 
 from svb_models_asl import __version__
@@ -452,7 +452,7 @@ class AslRestModel(Model):
         """
         # return f, None 
         if not self.pvcorr:
-            f = tf.math.maximum(tf.reduce_max(data, axis=1), 0.1)
+            f = tf.math.maximum(np.percentile(data, 90, axis=1).astype(NP_DTYPE), 0.1)
             return f, None
         else:
             # Do a quick edge correction to up-scale signal in edge voxels 
@@ -463,7 +463,7 @@ class AslRestModel(Model):
             # Intialisation for PVEc: assume a CBF ratio of 3:1, 
             # let g = GM PV, w = WM PV = (1 - g), f = raw CBF, 
             # x = WM CBF. Then, wx + 3gx = f => x = 3f / (1 + 2g)
-            f = tf.math.maximum(tf.reduce_max(edge_data, axis=1), 0.1)
+            f = tf.math.maximum(np.percentile(data, 90, axis=1).astype(NP_DTYPE), 0.1)
             fwm = f / (1 + 2*self.pvgm)
             if _param.name == 'fwm':
                 return fwm, None
@@ -489,11 +489,23 @@ class AslRestModel(Model):
             time_max = self.log_tf(tf.squeeze(tf.gather(t, max_idx, axis=1, batch_dims=1), axis=-1), shape=True, force=True, name="time_max")
 
             if _param.name == 'fwm': 
-                return time_max + 0.3 - self.tau, None
+                return (time_max + 0.3 - self.tau, 
+                        self.attsd * np.ones_like(time_max))
             else: 
-                return time_max - self.tau, None
-        else:
-            return None, None
+                return (time_max - self.tau, 
+                        self.attsd * np.ones_like(time_max))
+        # elif self.data_model.is_volumetric:
+        #     if _param.name == 'fwm': 
+        #         return self.attwm, self.attsd
+        #     else: 
+        #         return self.att, self.attsd
+        # elif self.data_model.is_hybrid: 
+        #     att_init = np.ones(self.data_model.n_nodes, dtype=np.float32)
+        #     att_init[self.data_model.surf_slicer] = self.att 
+        #     att_init[self.data_model.vol_slicer] = self.attwm
+        #     return att_init, self.attsd
+        else: 
+            return self.att, self.attsd * np.ones_like(self.att)
 
     def expand_dims(self, array, ndim):
         while array.ndim < ndim: 
