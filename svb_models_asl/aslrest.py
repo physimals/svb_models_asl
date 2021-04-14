@@ -452,7 +452,7 @@ class AslRestModel(Model):
         """
         # return f, None 
         if not self.pvcorr:
-            f = tf.math.maximum(np.percentile(data, 90, axis=1).astype(NP_DTYPE), 0.1)
+            f = tf.math.maximum(np.percentile(data, 80, axis=1).astype(NP_DTYPE), 0.1)
             return f, None
         else:
             # Do a quick edge correction to up-scale signal in edge voxels 
@@ -463,7 +463,7 @@ class AslRestModel(Model):
             # Intialisation for PVEc: assume a CBF ratio of 3:1, 
             # let g = GM PV, w = WM PV = (1 - g), f = raw CBF, 
             # x = WM CBF. Then, wx + 3gx = f => x = 3f / (1 + 2g)
-            f = tf.math.maximum(np.percentile(data, 90, axis=1).astype(NP_DTYPE), 0.1)
+            f = tf.math.maximum(np.percentile(data, 80, axis=1).astype(NP_DTYPE), 0.1)
             fwm = f / (1 + 2*self.pvgm)
             if _param.name == 'fwm':
                 return fwm, None
