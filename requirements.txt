@@ -2,4 +2,6 @@ svb
 numpy
 six
 tensorflow
-
+pyfab
+sklearn
+tensorflow-probability

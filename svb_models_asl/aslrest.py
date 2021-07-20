@@ -9,7 +9,7 @@ except ImportError:
 import numpy as np
 
 from svb.model import Model, ModelOption
-from svb.utils import ValueList
+from svb.utils import ValueList, NP_DTYPE
 from svb.parameter import get_parameter
 
 from svb_models_asl import __version__
@@ -41,7 +41,7 @@ class AslRestModel(Model):
         # WM tissue properties 
         ModelOption("incwm", "Include WM parameters", default=False),
         ModelOption("fwm", "WM perfusion", type=float, default=0),
-        ModelOption("attwm", "WM arterial transit time", clargs="--batwm", type=float, default=1.6),
+        ModelOption("attwm", "WM arterial transit time", clargs=("--batwm",), type=float, default=1.6),
         ModelOption("t1wm", "WM T1 value", units="s", type=float, default=1.1),
         ModelOption("pcwm", "WM parition coefficient. See --pc", type=float, default=0.8),
         ModelOption("fcalibwm", "WM perfusion value to use in estimation of effective T1", type=float, default=0.003),
@@ -72,6 +72,9 @@ class AslRestModel(Model):
 
         if self.tis is None and self.plds is None:
             raise ValueError("Either TIs or PLDs must be given")
+
+        # Only infer ATT with multi-time data 
+        self.inferatt = (len(self.tis) > 1)
 
         if self.attsd is None:
             self.attsd = 1.0 if len(self.tis) > 1 else 0.1
@@ -129,38 +132,45 @@ class AslRestModel(Model):
         if self.artonly:
             self.inferart = True
 
+        # This is used for casting up various values to full-sized vectors, 
+        # which ensures shape compatability in tf 
+        ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
+
         if not self.artonly:
             self.params = [
                 get_parameter("ftiss", dist="Normal", 
                             mean=1.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
-                            **options),
-                get_parameter("delttiss", dist="Normal", 
-                            mean=self.att, var=self.attsd**2,
-                            post_init=self._init_delt,
                             **options)
             ]
+            if self.inferatt: 
+                self.params.append(
+                    get_parameter("delttiss", dist="Normal", 
+                                mean=self.att, var=self.attsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                    )
 
             # Set up the PC,T1,PV tensors that correspond with the parameter
             # tensors in a node-wise manner. The default case below sets up for 
             # volumetric mode without PVEc, which just passes-through the T1, 
             # PC and GM PV values (NB GM PV defaults to 1 in non-PVEc mode). 
-            # We just cast up all values to a full-sized vector by multiplying with ones 
-            ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
             t1_full = self.t1 * ones
             pc_full = self.pc * ones
             pvgm_full = self.pvgm * ones
             fcalib_full = self.fcalib * ones
+            att_full = self.att * ones 
             
             # In surface/hybrid mode, we concatenate all nodes of different tissue types
             # into a single tensor. The data model knows the mapping between node numbers
             # and corresponding tissue type, so we use that to write in the correct tissue
             # properties. 
             if not self.data_model.is_volumetric:
-                properties = { 'GM': (self.t1, self.pc, self.pvgm, self.fcalib), 
-                               'WM': (self.t1wm, self.pcwm, self.pvwm, self.fcalibwm) }
+                properties = { 'GM': (self.att, self.t1, self.pc, self.pvgm, self.fcalib), 
+                               'WM': (self.attwm, self.t1wm, self.pcwm, self.pvwm, self.fcalibwm) }
                 for node_slice, tiss in self.data_model.node_labels: 
-                    t1, pc, pv, fc = properties[tiss]
+                    att, t1, pc, pv, fc = properties[tiss]
+                    att_full[node_slice] = att
                     t1_full[node_slice] = t1
                     pc_full[node_slice] = pc
                     pvgm_full[node_slice] = pv
@@ -171,18 +181,22 @@ class AslRestModel(Model):
             self.pc = pc_full
             self.pvgm = pvgm_full
             self.fcalib = fcalib_full
+            self.att = att_full
 
             if self.inferwm: 
-                self.params += [
+                self.params.append(
                     get_parameter("fwm", dist="Normal", 
                             mean=0.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
-                            **options),
-                    get_parameter("deltwm", dist="Normal", 
-                            mean=self.attwm, var=self.attsd**2,
-                            post_init=self._init_delt,
                             **options)
-                ]
+                )
+                if self.inferatt:
+                    self.params.append(
+                        get_parameter("deltwm", dist="Normal", 
+                                mean=self.attwm, var=self.attsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                    )
 
                 # Volumetric PVEc mode: we carry 2 complete sets of full-size tensors
                 # around, one set for GM (set up above), this set for WM 
@@ -190,6 +204,7 @@ class AslRestModel(Model):
                 self.pcwm = self.pcwm * ones
                 self.pvwm = self.pvwm * ones
                 self.fcalibwm = self.fcalibwm * ones
+                self.attwm *= ones 
 
         if self.infert1:
             self.params.append(
@@ -210,12 +225,13 @@ class AslRestModel(Model):
                               prior_type="A",
                               **options)
             )
-            self.params.append(
-                get_parameter("deltblood", dist="Normal", 
-                              mean=self.artt, var=self.arttsd**2,
-                              post_init=self._init_delt,
-                              **options)
-            )
+            if self.inferatt:
+                self.params.append(
+                    get_parameter("deltblood", dist="Normal", 
+                                mean=self.artt, var=self.arttsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                )
 
     def evaluate(self, params, tpts):
         """
@@ -231,21 +247,37 @@ class AslRestModel(Model):
         :return: [W, S, N] tensor containing model output at the specified time values
                  and for each time value using the specified parameter values
         """
+
+        n_params = len(params) if isinstance(params, list) else params.get_shape().as_list()[0]
+        if n_params != len(self.params):
+            raise ValueError(f"Model set up to infer {len(self.params)} parameters; "
+                "this many parameter arrays must be supplied")
+
         # Extract parameter tensors
         t = self.log_tf(tpts, name="tpts", shape=True)
         param_idx = 0
         if not self.artonly:
             ftiss = self.log_tf(params[param_idx], name="ftiss", shape=True)
             param_idx += 1
-            delt = self.log_tf(params[param_idx], name="delt", shape=True)
-            param_idx += 1
+
+            if self.inferatt:
+                delt = self.log_tf(params[param_idx], name="delt", shape=True)
+                param_idx += 1
+            else: 
+                delt = self.att 
+        
             if self.inferwm:
                 fwm = self.log_tf(params[param_idx], name="fwm", shape=True)
                 param_idx += 1
-                deltwm = self.log_tf(params[param_idx], name="deltwm", shape=True)
-                param_idx += 1   
+                
+                if self.inferatt:
+                    deltwm = self.log_tf(params[param_idx], name="deltwm", shape=True)
+                    param_idx += 1   
+                else: 
+                    deltwm = self.attwm 
+
             else: 
-                fwm = self.fwm 
+                fwm = self.fwm
                 deltwm = self.attwm              
     
         if self.infert1:
@@ -420,7 +452,7 @@ class AslRestModel(Model):
         """
         # return f, None 
         if not self.pvcorr:
-            f = tf.math.maximum(tf.reduce_max(data, axis=1), 0.1)
+            f = tf.math.maximum(data.mean(-1).astype(NP_DTYPE), 0.1)
             return f, None
         else:
             # Do a quick edge correction to up-scale signal in edge voxels 
@@ -431,7 +463,7 @@ class AslRestModel(Model):
             # Intialisation for PVEc: assume a CBF ratio of 3:1, 
             # let g = GM PV, w = WM PV = (1 - g), f = raw CBF, 
             # x = WM CBF. Then, wx + 3gx = f => x = 3f / (1 + 2g)
-            f = tf.math.maximum(tf.reduce_max(edge_data, axis=1), 0.1)
+            f = tf.math.maximum(data.mean(-1).astype(NP_DTYPE), 0.1)
             fwm = f / (1 + 2*self.pvgm)
             if _param.name == 'fwm':
                 return fwm, None
@@ -457,11 +489,23 @@ class AslRestModel(Model):
             time_max = self.log_tf(tf.squeeze(tf.gather(t, max_idx, axis=1, batch_dims=1), axis=-1), shape=True, force=True, name="time_max")
 
             if _param.name == 'fwm': 
-                return time_max + 0.3 - self.tau, None
+                return (time_max + 0.3 - self.tau, 
+                        self.attsd * np.ones_like(time_max))
             else: 
-                return time_max - self.tau, None
-        else:
-            return None, None
+                return (time_max - self.tau, 
+                        self.attsd * np.ones_like(time_max))
+        # elif self.data_model.is_volumetric:
+        #     if _param.name == 'fwm': 
+        #         return self.attwm, self.attsd
+        #     else: 
+        #         return self.att, self.attsd
+        # elif self.data_model.is_hybrid: 
+        #     att_init = np.ones(self.data_model.n_nodes, dtype=np.float32)
+        #     att_init[self.data_model.surf_slicer] = self.att 
+        #     att_init[self.data_model.vol_slicer] = self.attwm
+        #     return att_init, self.attsd
+        else: 
+            return self.att, self.attsd * np.ones_like(self.att)
 
     def expand_dims(self, array, ndim):
         while array.ndim < ndim: 
