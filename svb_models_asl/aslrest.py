@@ -52,6 +52,7 @@ class AslRestModel(Model):
         ModelOption("arttsd", "Arterial bolus arrival time prior std.dev.", units="s", clargs=("--batartsd",), type=float, default=None),
 
         # Inference options 
+        ModelOption("inferatt", "Infer ATT (default on for multi-time imaging)", type=bool, default=None), 
         ModelOption("artonly", "Only infer arterial component not tissue", type=bool),
         ModelOption("inferart", "Infer arterial component", type=bool),
         ModelOption("infert1", "Infer T1 value", type=bool),
@@ -74,7 +75,11 @@ class AslRestModel(Model):
             raise ValueError("Either TIs or PLDs must be given")
 
         # Only infer ATT with multi-time data 
-        self.inferatt = (len(self.tis) > 1)
+        if self.inferatt is None: 
+            self.inferatt = (len(self.tis) > 1)
+        else: 
+            if not isinstance(self.inferatt, bool): 
+                raise ValueError("inferatt argument must be bool")
 
         if self.attsd is None:
             self.attsd = 1.0 if len(self.tis) > 1 else 0.1
