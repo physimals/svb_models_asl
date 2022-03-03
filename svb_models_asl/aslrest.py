@@ -96,8 +96,8 @@ class AslRestModel(Model):
         if len(self.repeats) == 1:
             # FIXME variable repeats
             self.repeats = self.repeats[0]
-        elif len(self.repeats) > 1 and \
-            any([ r != self.repeats[0] for r in self.repeats ]):
+        elif (len(self.repeats) > 1 and 
+              any([ r != self.repeats[0] for r in self.repeats ])):
             raise NotImplementedError("Variable repeats for TIs/PLDs")
 
         if self.pvcorr: 
@@ -142,24 +142,14 @@ class AslRestModel(Model):
         ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
 
         if not self.artonly:
-            self.params = [
-                get_parameter("ftiss", dist="Normal", 
-                            mean=1.5, prior_var=1e6, post_var=1.5, 
-                            post_init=self._init_flow,
-                            **options)
-            ]
-            if self.inferatt: 
-                self.params.append(
-                    get_parameter("delttiss", dist="Normal", 
-                                mean=self.att, var=self.attsd**2,
-                                post_init=self._init_delt,
-                                **options)
-                    )
 
-            # Set up the PC,T1,PV tensors that correspond with the parameter
-            # tensors in a node-wise manner. The default case below sets up for 
-            # volumetric mode without PVEc, which just passes-through the T1, 
-            # PC and GM PV values (NB GM PV defaults to 1 in non-PVEc mode). 
+            # Set up arrays for all model parameters, sized according to 
+            # the number of nodes (voxels/vertices/hybrid) in the system.
+            # Some of these arrays will then be used to initialise inference
+            # parameters (ie, optimised parameters), whereas some may remain 
+            # fixed, but either way they all need to be given sensible initial
+            # values. 
+            # ftiss_full = self.ftiss * ones 
             t1_full = self.t1 * ones
             pc_full = self.pc * ones
             pvgm_full = self.pvgm * ones
@@ -181,13 +171,30 @@ class AslRestModel(Model):
                     pvgm_full[node_slice] = pv
                     fcalib_full[node_slice] = fc
 
-            # Overwrite back onto the self object. 
+            # Overwrite back onto the self object so they can be accessed later 
             self.t1 = t1_full
             self.pc = pc_full
             self.pvgm = pvgm_full
             self.fcalib = fcalib_full
             self.att = att_full
 
+            # NB order in which parameters are appended is important
+            # CBF and ATT first, for volumetric GM or all nodes in surf/hybrid
+            self.params = [
+                get_parameter("ftiss", dist="Normal", 
+                            mean=1.5, prior_var=1e6, post_var=1.5, 
+                            post_init=self._init_flow,
+                            **options)
+            ]
+            if self.inferatt: 
+                self.params.append(
+                    get_parameter("delttiss", dist="Normal", 
+                                mean=self.att, var=self.attsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                    )
+
+            # CBF and ATT for WM in volumetric mode only 
             if self.inferwm: 
                 self.params.append(
                     get_parameter("fwm", dist="Normal", 
@@ -209,7 +216,7 @@ class AslRestModel(Model):
                 self.pcwm = self.pcwm * ones
                 self.pvwm = self.pvwm * ones
                 self.fcalibwm = self.fcalibwm * ones
-                self.attwm *= ones 
+                self.attwm = self.attwm * ones 
 
         if self.infert1:
             self.params.append(
