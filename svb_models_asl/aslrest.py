@@ -7,6 +7,7 @@ except ImportError:
     import tensorflow as tf
 
 import numpy as np
+import warnings
 
 from svb.model import Model, ModelOption
 from svb.utils import ValueList, NP_DTYPE
@@ -52,6 +53,7 @@ class AslRestModel(Model):
         ModelOption("arttsd", "Arterial bolus arrival time prior std.dev.", units="s", clargs=("--batartsd",), type=float, default=None),
 
         # Inference options 
+        ModelOption("inferatt", "Infer ATT (default on for multi-time imaging)", type=bool, default=None),
         ModelOption("artonly", "Only infer arterial component not tissue", type=bool),
         ModelOption("inferart", "Infer arterial component", type=bool),
         ModelOption("infert1", "Infer T1 value", type=bool),
@@ -74,7 +76,11 @@ class AslRestModel(Model):
             raise ValueError("Either TIs or PLDs must be given")
 
         # Only infer ATT with multi-time data 
-        self.inferatt = (len(self.tis) > 1)
+        if self.inferatt is None: 
+            self.inferatt = (len(self.tis) > 1)
+        else: 
+            if not isinstance(self.inferatt, bool): 
+                raise ValueError("inferatt argument must be bool")
 
         if self.attsd is None:
             self.attsd = 1.0 if len(self.tis) > 1 else 0.1
@@ -84,7 +90,7 @@ class AslRestModel(Model):
             self.arttsd = self.attsd
 
         # Repeats are supposed to be a list but can be a single number
-        if isinstance(self.repeats, int):
+        if isinstance(self.repeats, (int, np.integer)):
             self.repeats = [self.repeats]
 
         # For now we only support fixed repeats
@@ -107,9 +113,14 @@ class AslRestModel(Model):
                 if self.pvgm.size == self.data_model.mask_flattened.size: 
                     self.pvgm = self.pvgm[self.data_model.mask_flattened]
                     self.pvwm = self.pvwm[self.data_model.mask_flattened]
-            except: 
-                if not isinstance(self.pvgm, (int,float)): 
+            except:
+                if not isinstance(self.pvgm, (int,float,np.integer,np.floating)): 
                     raise ValueError("Could not interpret PV estimates")
+                self.pvgm = np.asanyarray(self.pvgm)
+                self.pvwm = np.asanyarray(self.pvwm)
+                if self.pvgm.size == 1: 
+                    warnings.warn("Single single scalar value for pvgm provided,"
+                                  " this will be broadcast across all voxels.")
 
         if self.incwm and (np.array(self.pvgm + self.pvwm) > 1).any():
             raise ValueError("At least one GM and WM PV sum to > 1")
@@ -137,19 +148,6 @@ class AslRestModel(Model):
         ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
 
         if not self.artonly:
-            self.params = [
-                get_parameter("ftiss", dist="Normal", 
-                            mean=1.5, prior_var=1e6, post_var=1.5, 
-                            post_init=self._init_flow,
-                            **options)
-            ]
-            if self.inferatt: 
-                self.params.append(
-                    get_parameter("delttiss", dist="Normal", 
-                                mean=self.att, var=self.attsd**2,
-                                post_init=self._init_delt,
-                                **options)
-                    )
 
             # Set up the PC,T1,PV tensors that correspond with the parameter
             # tensors in a node-wise manner. The default case below sets up for 
@@ -182,6 +180,24 @@ class AslRestModel(Model):
             self.pvgm = pvgm_full
             self.fcalib = fcalib_full
             self.att = att_full
+
+            # NB order is important here - we must initialise these parameters 
+            # after we have done all the hybrid-specific initialisation above, 
+            # to ensure we are getting the correct initial values for them. 
+            self.params = [
+                get_parameter("ftiss", dist="Normal", 
+                            mean=1.5, prior_var=1e6, post_var=1.5, 
+                            post_init=self._init_flow,
+                            **options)
+            ]
+            if self.inferatt: 
+                self.params.append(
+                    get_parameter("delttiss", dist="Normal", 
+                                mean=self.att, var=self.attsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                    )
+
 
             if self.inferwm: 
                 self.params.append(
