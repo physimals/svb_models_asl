@@ -466,25 +466,31 @@ class AslRestModel(Model):
         """
         Initial value for the flow parameter
         """
-        # return f, None 
-        if not self.pvcorr:
-            f = tf.math.maximum(data.mean(-1).astype(NP_DTYPE), 0.1)
-            return f, None
-        else:
-            # Do a quick edge correction to up-scale signal in edge voxels 
-            # Guard against small number division 
-            pvsum = self.pvgm + self.pvwm
-            edge_data = data / np.maximum(pvsum, 0.3)[:,None]
 
-            # Intialisation for PVEc: assume a CBF ratio of 3:1, 
-            # let g = GM PV, w = WM PV = (1 - g), f = raw CBF, 
-            # x = WM CBF. Then, wx + 3gx = f => x = 3f / (1 + 2g)
-            f = tf.math.maximum(data.mean(-1).astype(NP_DTYPE), 0.1)
-            fwm = f / (1 + 2*self.pvgm)
-            if _param.name == 'fwm':
-                return fwm, None
+        f = tf.math.maximum(data.mean(-1).astype(NP_DTYPE), 0.1)
+
+        if self.data_model.is_volumetric: 
+            if not self.pvcorr:
+                return f, None
             else: 
-                return 3 * fwm, None 
+                # Intialisation for volumetric PVEc: assume a CBF ratio of 3:1
+                fwm = f / (1 + 2*self.pvgm)
+                if _param.name == 'fwm':
+                    return fwm, None
+                else: 
+                    return 3 * fwm, None 
+
+        elif self.data_model.is_hybrid: 
+            fwm = 0.75 * f 
+            fgm = self.data_model.voxels_to_nodes((1.5 * f)[:,None], edge_scale=False)
+            fgm = tf.squeeze(fgm)
+            f_hybrid = tf.concat([fgm[self.data_model.surf_slicer], fwm], axis=0)
+            return f_hybrid, None
+
+        else:
+            f_surf = tf.squeeze(self.data_model.voxels_to_nodes(f[:,None], edge_scale=False))
+            return f_surf, None 
+
 
 
     def _init_fblood(self, _param, _t, data):
