@@ -185,14 +185,14 @@ class AslRestModel(Model):
             # after we have done all the hybrid-specific initialisation above, 
             # to ensure we are getting the correct initial values for them. 
             self.params = [
-                get_parameter("ftiss", dist="Normal", 
+                get_parameter("ftiss", dist="FoldedNormal", 
                             mean=1.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
                             **options)
             ]
             if self.inferatt: 
                 self.params.append(
-                    get_parameter("delttiss", dist="Normal", 
+                    get_parameter("delttiss", dist="FoldedNormal", 
                                 mean=self.att, var=self.attsd**2,
                                 post_init=self._init_delt,
                                 **options)
@@ -201,14 +201,14 @@ class AslRestModel(Model):
 
             if self.inferwm: 
                 self.params.append(
-                    get_parameter("fwm", dist="Normal", 
+                    get_parameter("fwm", dist="FoldedNormal", 
                             mean=0.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
                             **options)
                 )
                 if self.inferatt:
                     self.params.append(
-                        get_parameter("deltwm", dist="Normal", 
+                        get_parameter("deltwm", dist="FoldedNormal", 
                                 mean=self.attwm, var=self.attsd**2,
                                 post_init=self._init_delt,
                                 **options)
