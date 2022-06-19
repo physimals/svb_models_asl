@@ -10,7 +10,7 @@ import numpy as np
 import warnings
 
 from svb.model import Model, ModelOption
-from svb.utils import ValueList, NP_DTYPE
+from svb.utils import ValueList, NP_DTYPE, nptf_shape
 from svb.parameter import get_parameter
 
 from svb_models_asl import __version__
@@ -235,7 +235,7 @@ class AslRestModel(Model):
         if self.inferart:
             self.leadscale = 0.01
             self.params.append(
-                get_parameter("fblood", dist="Normal",
+                get_parameter("fblood", dist="FoldedNormal",
                               mean=0.0, prior_var=1e6, post_var=1.5,
                               post_init=self._init_fblood,
                               prior_type="A",
@@ -243,7 +243,7 @@ class AslRestModel(Model):
             )
             if self.inferatt:
                 self.params.append(
-                    get_parameter("deltblood", dist="Normal", 
+                    get_parameter("deltblood", dist="FoldedNormal", 
                                 mean=self.artt, var=self.arttsd**2,
                                 post_init=self._init_delt,
                                 **options)
@@ -268,6 +268,10 @@ class AslRestModel(Model):
         if n_params != len(self.params):
             raise ValueError(f"Model set up to infer {len(self.params)} parameters; "
                 "this many parameter arrays must be supplied")
+
+        if nptf_shape(params[0])[0] != self.data_model.n_nodes: 
+            raise ValueError("Shape mismatch: each parameter array must have first dimension"
+                                f" of size equal to number of nodes ({self.data_model.n_nodes})")
 
         # Extract parameter tensors
         t = self.log_tf(tpts, name="tpts", shape=True)
@@ -481,14 +485,17 @@ class AslRestModel(Model):
                     return 3 * fwm, None 
 
         elif self.data_model.is_hybrid: 
-            fwm = 0.75 * f 
-            fgm = self.data_model.voxels_to_nodes((1.5 * f)[:,None], edge_scale=False)
-            fgm = tf.squeeze(fgm)
-            f_hybrid = tf.concat([fgm[self.data_model.surf_slicer], fwm], axis=0)
-            return f_hybrid, None
+            fn = self.data_model.voxels_to_nodes((1.5 * f)[:,None], edge_scale=True)
+            fn = tf.squeeze(fn)
+            # WARNING: we are assuming all subcortical ROIs are GM here... 
+            f_hybrid = tf.concat([
+                fn[self.data_model.surf_slicer], 
+                fn[self.data_model.vol_slicer] * 0.5, 
+                fn[self.data_model.subcortical_slicer]], axis=0)
+            return f_hybrid, None 
 
         else:
-            f_surf = tf.squeeze(self.data_model.voxels_to_nodes(f[:,None], edge_scale=False))
+            f_surf = tf.squeeze(self.data_model.voxels_to_nodes(f[:,None], edge_scale=True))
             return f_surf, None 
 
 
@@ -527,7 +534,7 @@ class AslRestModel(Model):
         #     att_init[self.data_model.vol_slicer] = self.attwm
         #     return att_init, self.attsd
         else: 
-            return self.att, self.attsd * np.ones_like(self.att)
+            return self.att, None #self.attsd * np.ones_like(self.att)
 
     def expand_dims(self, array, ndim):
         while array.ndim < ndim: 
