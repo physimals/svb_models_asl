@@ -200,19 +200,6 @@ class AslRestModel(Model):
 
 
             if self.inferwm: 
-                self.params.append(
-                    get_parameter("fwm", dist="FoldedNormal", 
-                            mean=0.5, prior_var=1e6, post_var=1.5, 
-                            post_init=self._init_flow,
-                            **options)
-                )
-                if self.inferatt:
-                    self.params.append(
-                        get_parameter("deltwm", dist="FoldedNormal", 
-                                mean=self.attwm, var=self.attsd**2,
-                                post_init=self._init_delt,
-                                **options)
-                    )
 
                 # Volumetric PVEc mode: we carry 2 complete sets of full-size tensors
                 # around, one set for GM (set up above), this set for WM 
@@ -221,6 +208,22 @@ class AslRestModel(Model):
                 self.pvwm = self.pvwm * ones
                 self.fcalibwm = self.fcalibwm * ones
                 self.attwm *= ones 
+
+                self.params.append(
+                    get_parameter("fwm", dist="FoldedNormal", 
+                            mean=0.5, prior_var=1e6, post_var=1.5, 
+                            post_init=self._init_flow,
+                            **options)
+                )
+
+                if self.inferatt:
+                    self.params.append(
+                        get_parameter("deltwm", dist="FoldedNormal", 
+                                mean=self.attwm, var=self.attsd**2,
+                                post_init=self._init_delt,
+                                **options)
+                    )
+
 
         if self.infert1:
             self.params.append(
@@ -534,7 +537,7 @@ class AslRestModel(Model):
         #     att_init[self.data_model.vol_slicer] = self.attwm
         #     return att_init, self.attsd
         else: 
-            return self.att, None #self.attsd * np.ones_like(self.att)
+            return _param.prior_dist.mean, None
 
     def expand_dims(self, array, ndim):
         while array.ndim < ndim: 
