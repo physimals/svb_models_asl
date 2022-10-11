@@ -277,24 +277,24 @@ class AslRestModel(Model):
                                 f" of size equal to number of nodes ({self.data_model.n_nodes})")
 
         # Extract parameter tensors
-        t = self.log_tf(tpts, name="tpts", shape=True)
+        t = tf.identity(tpts, name="tpts")
         param_idx = 0
         if not self.artonly:
-            ftiss = self.log_tf(params[param_idx], name="ftiss", shape=True)
+            ftiss = tf.identity(params[param_idx], name="ftiss")
             param_idx += 1
 
             if self.inferatt:
-                delt = self.log_tf(params[param_idx], name="delt", shape=True)
+                delt = tf.identity(params[param_idx], name="delt")
                 param_idx += 1
             else: 
                 delt = self.att 
         
             if self.inferwm:
-                fwm = self.log_tf(params[param_idx], name="fwm", shape=True)
+                fwm = tf.identity(params[param_idx], name="fwm")
                 param_idx += 1
                 
                 if self.inferatt:
-                    deltwm = self.log_tf(params[param_idx], name="deltwm", shape=True)
+                    deltwm = tf.identity(params[param_idx], name="deltwm")
                     param_idx += 1   
                 else: 
                     deltwm = self.attwm 
@@ -304,10 +304,10 @@ class AslRestModel(Model):
                 deltwm = self.attwm              
     
         if self.infert1:
-            t1 = self.log_tf(params[param_idx], name="t1", shape=True)
+            t1 = tf.identity(params[param_idx], name="t1")
             param_idx += 1
             if self.inferwm: 
-                t1wm = self.log_tf(params[param_idx], name="t1wm", shape=True)
+                t1wm = tf.identity(params[param_idx], name="t1wm")
                 param_idx += 1 
 
         else:
@@ -315,8 +315,8 @@ class AslRestModel(Model):
             t1wm = self.t1wm
 
         if self.inferart:
-            fblood = self.log_tf(params[param_idx], name="fblood", shape=True, force=False)
-            deltblood = self.log_tf(params[param_idx+1], name="deltblood", shape=True, force=False)
+            fblood = tf.identity(params[param_idx], name="fblood", shape=True, force=False)
+            deltblood = tf.identity(params[param_idx+1], name="deltblood", shape=True, force=False)
             param_idx += 2
 
         # Extra parameters may be required by subclasses, e.g. dispersion parameters
@@ -329,14 +329,14 @@ class AslRestModel(Model):
         # tensors. In either case, we only need to evaluate the first block to get
         # the tissue signal 
         if not self.artonly:
-            signal = self.log_tf(self.tissue_signal(t, ftiss, delt, t1, self.pc, 
+            signal = tf.identity(self.tissue_signal(t, ftiss, delt, t1, self.pc, 
                         self.fcalib, self.pvgm, extra_params), name="tiss_signal")
 
             # The only case where we explicitly add a WM contribution is when doing
             # PVEc in volumetric mode (WM has already been accounted for in the above
             # block in surface/hybrid mode)
             if (self.data_model.is_volumetric) and (self.incwm): 
-                wmsignal = self.log_tf(self.tissue_signal(t, fwm, deltwm, t1wm, self.pcwm, 
+                wmsignal = tf.identity(self.tissue_signal(t, fwm, deltwm, t1wm, self.pcwm, 
                                         self.fcalibwm, self.pvwm, extra_params),
                                         name="wm_tiss_signal")
                 signal += wmsignal
@@ -346,17 +346,17 @@ class AslRestModel(Model):
 
         if self.inferart:
             # FIMXE: is this going to work in surface/hybrid mode?
-            signal += self.log_tf(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
+            signal += tf.identity(self.art_signal(t, fblood, deltblood, extra_params), name="art_signal")
 
-        return self.log_tf(signal, name="asl_signal")
+        return tf.identity(signal, name="asl_signal")
 
     def tissue_signal(self, t, ftiss, delt, t1, pc, fcalib, pv=1.0, extra_params=[]):
         """
         PASL/pCASL kinetic model for tissue
         """
 
-        if (extra_params != []) and (extra_params.shape[0] > 0): 
-            raise NotImplementedError("Extra tissue parameters not set up yet")
+        # if (extra_params != []) and (extra_params.shape[0] > 0): 
+        #     raise NotImplementedError("Extra tissue parameters not set up yet")
 
         # If these variables are np arrays, they may be under-sized compared to t,
         # so expand them up (tensorflow is very fussy about broadcasting)
@@ -370,7 +370,8 @@ class AslRestModel(Model):
 
         # Boolean masks indicating which voxel-timepoints are during the
         # bolus arrival and which are after
-        post_bolus = self.log_tf(tf.greater(t, tf.add(self.tau, delt), name="post_bolus"), shape=True)
+        # delt = (flag) * delt + (1-flag) * tf.stop_gradient(delt)
+        post_bolus = tf.identity(tf.greater(t, tf.add(self.tau, delt), name="post_bolus"))
         during_bolus = tf.logical_and(tf.greater(t, delt), tf.logical_not(post_bolus))
 
         # Rate constants
@@ -390,8 +391,8 @@ class AslRestModel(Model):
             during_bolus_signal = factor * ((tf.exp(r * t) - tf.exp(r * delt)))
             post_bolus_signal = factor * ((tf.exp(r * (delt + self.tau)) - tf.exp(r * delt)))
 
-        post_bolus_signal = self.log_tf(post_bolus_signal, name="post_bolus_signal", shape=True)
-        during_bolus_signal = self.log_tf(during_bolus_signal, name="during_bolus_signal", shape=True)
+        post_bolus_signal = tf.identity(post_bolus_signal, name="post_bolus_signal")
+        during_bolus_signal = tf.identity(during_bolus_signal, name="during_bolus_signal")
 
         # Build the signal from the during and post bolus components leaving as zero
         # where neither applies (i.e. pre bolus)
@@ -420,17 +421,17 @@ class AslRestModel(Model):
         # Boolean masks indicating which voxel-timepoints are in the leadin phase
         # and which in the leadout
         leadout = tf.greater(t, tf.add(deltblood, self.tau/2))
-        leadin = self.log_tf(tf.logical_not(leadout), name="leadin1", shape=True)
+
 
         # If deltblood is smaller than the lead in scale, we could 'lose' some
         # of the bolus, so reduce degree of lead in as deltblood -> 0. We
         # don't really need it in this case anyway since there will be no
         # gradient discontinuity
         leadscale = tf.minimum(deltblood, self.leadscale)
-        leadin = self.log_tf(tf.logical_and(leadin, tf.greater(leadscale, 0)), shape=True)
+
 
         # Calculate lead-in and lead-out signals
-        leadin_signal = self.log_tf(kcblood * 0.5 * (1 + tf.math.erf((t - deltblood) / leadscale)), name="leadin_signal", shape=True)
+        leadout_signal = kcblood * 0.5 * (1 + tf.math.erf(-(t - deltblood - self.tau) / self.leadscale))
         leadout_signal = kcblood * 0.5 * (1 + tf.math.erf(-(t - deltblood - self.tau) / self.leadscale))
 
         # Form final signal from combination of lead in and lead out signals
