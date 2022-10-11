@@ -457,11 +457,10 @@ class AslRestModel(Model):
         # Time points derived from volumetric data need to be transformed
         # into node space.
         if not self.data_model.is_volumetric:
-            t = t.reshape(-1, 1, self.data_model.n_tpts)
-            with tf.Session() as sess:
+            t = tf.reshape(t, (-1, 1, self.data_model.n_tpts))
+            t = self.data_model.voxels_to_nodes_ts(t, edge_scale=False)
                 t = self.data_model.voxels_to_nodes_ts(t, edge_scale=False)
-                t = sess.run(tf.identity(t))
-            # HACK to fix the fact that conversion tensors will
+        return tf.reshape(t, (-1, self.data_model.n_tpts))
             # be cached in the wrong graph
             self.data_model.uncache_tensors()
 
