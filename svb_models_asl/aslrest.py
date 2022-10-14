@@ -1,16 +1,13 @@
 """
 Inference forward models for ASL data
 """
-try:
-    import tensorflow.compat.v1 as tf
-except ImportError:
-    import tensorflow as tf
-
-import numpy as np
 import warnings
 
+import tensorflow as tf
+import numpy as np
+
 from svb.model import Model, ModelOption
-from svb.utils import ValueList, NP_DTYPE, nptf_shape
+from svb.utils import ValueList, NP_DTYPE
 from svb.parameter import get_parameter
 
 from svb_models_asl import __version__
@@ -185,16 +182,16 @@ class AslRestModel(Model):
             # after we have done all the hybrid-specific initialisation above, 
             # to ensure we are getting the correct initial values for them. 
             self.params = [
-                get_parameter("ftiss", dist="FoldedNormal", 
+                get_parameter("ftiss", dist="NormalDist", 
                             mean=1.5, prior_var=1e6, post_var=1.5, 
-                            post_init=self._init_flow,
+                            post_init=self._init_flow, data_model=data_model,
                             **options)
             ]
             if self.inferatt: 
                 self.params.append(
-                    get_parameter("delttiss", dist="FoldedNormal", 
+                    get_parameter("delttiss", dist="FoldedNormalDist", 
                                 mean=self.att, var=self.attsd**2,
-                                post_init=self._init_delt,
+                                post_init=self._init_delt, data_model=data_model,
                                 **options)
                     )
 
@@ -210,7 +207,7 @@ class AslRestModel(Model):
                 self.attwm *= ones 
 
                 self.params.append(
-                    get_parameter("fwm", dist="FoldedNormal", 
+                    get_parameter("fwm", dist="NormalDist", 
                             mean=0.5, prior_var=1e6, post_var=1.5, 
                             post_init=self._init_flow,
                             **options)
@@ -218,7 +215,7 @@ class AslRestModel(Model):
 
                 if self.inferatt:
                     self.params.append(
-                        get_parameter("deltwm", dist="FoldedNormal", 
+                        get_parameter("deltwm", dist="FoldedNormalDist", 
                                 mean=self.attwm, var=self.attsd**2,
                                 post_init=self._init_delt,
                                 **options)
@@ -238,7 +235,7 @@ class AslRestModel(Model):
         if self.inferart:
             self.leadscale = 0.01
             self.params.append(
-                get_parameter("fblood", dist="FoldedNormal",
+                get_parameter("fblood", dist="NormalDist",
                               mean=0.0, prior_var=1e6, post_var=1.5,
                               post_init=self._init_fblood,
                               prior_type="A",
@@ -246,7 +243,7 @@ class AslRestModel(Model):
             )
             if self.inferatt:
                 self.params.append(
-                    get_parameter("deltblood", dist="FoldedNormal", 
+                    get_parameter("deltblood", dist="FoldedNormalDist", 
                                 mean=self.artt, var=self.arttsd**2,
                                 post_init=self._init_delt,
                                 **options)
@@ -272,7 +269,7 @@ class AslRestModel(Model):
             raise ValueError(f"Model set up to infer {len(self.params)} parameters; "
                 "this many parameter arrays must be supplied")
 
-        if nptf_shape(params[0])[0] != self.data_model.n_nodes: 
+        if np.all(tf.shape(params[0])[0] != self.data_model.n_nodes): 
             raise ValueError("Shape mismatch: each parameter array must have first dimension"
                                 f" of size equal to number of nodes ({self.data_model.n_nodes})")
 
@@ -421,17 +418,17 @@ class AslRestModel(Model):
         # Boolean masks indicating which voxel-timepoints are in the leadin phase
         # and which in the leadout
         leadout = tf.greater(t, tf.add(deltblood, self.tau/2))
-
+        leadin = tf.logical_not(leadout)
 
         # If deltblood is smaller than the lead in scale, we could 'lose' some
         # of the bolus, so reduce degree of lead in as deltblood -> 0. We
         # don't really need it in this case anyway since there will be no
         # gradient discontinuity
         leadscale = tf.minimum(deltblood, self.leadscale)
-
+        leadin = tf.logical_and(leadin, tf.greater(leadscale, 0))
 
         # Calculate lead-in and lead-out signals
-        leadout_signal = kcblood * 0.5 * (1 + tf.math.erf(-(t - deltblood - self.tau) / self.leadscale))
+        leadin_signal = kcblood * 0.5 * (1 + tf.math.erf((t - deltblood) / leadscale))
         leadout_signal = kcblood * 0.5 * (1 + tf.math.erf(-(t - deltblood - self.tau) / self.leadscale))
 
         # Form final signal from combination of lead in and lead out signals
@@ -459,12 +456,7 @@ class AslRestModel(Model):
         if not self.data_model.is_volumetric:
             t = tf.reshape(t, (-1, 1, self.data_model.n_tpts))
             t = self.data_model.voxels_to_nodes_ts(t, edge_scale=False)
-                t = self.data_model.voxels_to_nodes_ts(t, edge_scale=False)
         return tf.reshape(t, (-1, self.data_model.n_tpts))
-            # be cached in the wrong graph
-            self.data_model.uncache_tensors()
-
-        return t.reshape(-1, self.data_model.n_tpts)
 
     def __str__(self):
         return "ASL resting state model: %s" % __version__
@@ -537,7 +529,7 @@ class AslRestModel(Model):
         #     att_init[self.data_model.vol_slicer] = self.attwm
         #     return att_init, self.attsd
         else: 
-            return _param.prior_dist.mean, None
+            return _param.prior.dist.ext_mean, _param.prior.dist.ext_var
 
     def expand_dims(self, array, ndim):
         while array.ndim < ndim: 
