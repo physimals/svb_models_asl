@@ -507,17 +507,32 @@ class AslRestModel(Model):
         Initial value for the delttiss parameter
         """
         if self.att_init == "max":
-            t = self.log_tf(t, name="t", force=True, shape=True)
-            data = self.log_tf(data, name="data", force=True, shape=True)
-            max_idx = self.log_tf(tf.expand_dims(tf.math.argmax(data, axis=1), -1), shape=True, force=True, name="max_idx")
-            time_max = self.log_tf(tf.squeeze(tf.gather(t, max_idx, axis=1, batch_dims=1), axis=-1), shape=True, force=True, name="time_max")
+            max_idx = tf.expand_dims(tf.math.argmax(data, axis=1), -1)
+            time_max = tf.squeeze(self.tis[max_idx])
+
+            if self.data_model.is_volumetric: 
 
             if _param.name == 'fwm': 
                 return (time_max + 0.3 - self.tau, 
-                        self.attsd * np.ones_like(time_max))
+                            self.attsd * tf.ones_like(time_max))
             else: 
                 return (time_max - self.tau, 
-                        self.attsd * np.ones_like(time_max))
+                            self.attsd * tf.ones_like(time_max))
+
+            elif self.data_model.is_pure_surface: 
+                raise NotImplementedError() 
+
+            else:         
+                time_max = tf.squeeze(self.data_model.voxels_to_nodes(time_max[:,None], edge_scale=False))
+
+                att = tf.concat([
+                    time_max[self.data_model.surf_slicer] - self.tau, 
+                    time_max[self.data_model.vol_slicer] + 0.3 - self.tau, 
+                    time_max[self.data_model.subcortical_slicer] - self.tau], axis=0)
+
+                return att, self.attsd * tf.ones_like(time_max) 
+
+        # FIXME the below is out of date 
         # elif self.data_model.is_volumetric:
         #     if _param.name == 'fwm': 
         #         return self.attwm, self.attsd
