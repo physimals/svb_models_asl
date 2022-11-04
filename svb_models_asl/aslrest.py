@@ -443,19 +443,30 @@ class AslRestModel(Model):
             raise ValueError("ASL model configured with %i time points, but data has %i" % (len(self.tis)*self.repeats, self.data_model.n_tpts))
 
         # FIXME assuming grouped by TIs/PLDs
+        # FIXME could define tpts() as a tf.constant to avoid calculating from scratch?
         # Generate timings volume using the slicedt value
-        t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts], dtype=np.float32)
+        t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts], dtype=NP_DTYPE)
         for z in range(self.data_model.shape[2]):
             t[:, :, z, :] = np.array(sum([[ti + z*self.slicedt] * self.repeats for ti in self.tis], []))
 
-        # Unmasked voxel timings
+        # Discard voxels not in the mask 
         t = t[self.data_model.mask_vol > 0]
 
         # Time points derived from volumetric data need to be transformed
         # into node space.
         if not self.data_model.is_volumetric:
             t = tf.reshape(t, (-1, 1, self.data_model.n_tpts))
-            t = self.data_model.voxels_to_nodes_ts(t, edge_scale=False)
+            tn = self.data_model.voxels_to_nodes_ts(t, edge_scale=False)
+
+            # This was a sneaky bug - the projection to nodes was reducing
+            # TIs below their original values due to PVE. Sanity check here
+            # to ensure this doesn't happen. 
+            low = np.min(t) - np.min(tn) > 1e-3
+            high = np.max(tn) - np.max(t) > 1e-3
+            if low or high: 
+                raise ValueError("Node-wise model tpts contains values outside the range of voxel-wise tpts")
+            t = tn 
+
         return tf.reshape(t, (-1, self.data_model.n_tpts))
 
     def __str__(self):
