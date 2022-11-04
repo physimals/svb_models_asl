@@ -1,13 +1,12 @@
-"""
-Inference forward models for ASL data
-"""
+"""Inference forward models for ASL data"""
+
 import warnings
 
 import tensorflow as tf
 import numpy as np
 
 from svb.model import Model, ModelOption
-from svb.utils import ValueList, NP_DTYPE
+from svb.utils import ValueList, NP_DTYPE, TF_DTYPE
 from svb.parameter import get_parameter
 
 from svb_models_asl import __version__
@@ -67,7 +66,8 @@ class AslRestModel(Model):
     def __init__(self, data_model, **options):
         Model.__init__(self, data_model, **options)
         if self.plds is not None:
-            self.tis = [self.tau + pld for pld in self.plds]
+            self.plds = np.array(self.plds, dtype=NP_DTYPE)
+            self.tis = self.plds + self.tau
 
         if self.tis is None and self.plds is None:
             raise ValueError("Either TIs or PLDs must be given")
@@ -79,8 +79,11 @@ class AslRestModel(Model):
             if not isinstance(self.inferatt, bool): 
                 raise ValueError("inferatt argument must be bool")
 
+        if (not self.att_init) and self.inferatt: 
+            self.att_init = 'max'
+
         if self.attsd is None:
-            self.attsd = 1.0 if len(self.tis) > 1 else 0.1
+            self.attsd = 1.5 if len(self.tis) > 1 else 0.1
         if self.artt is None:
             self.artt = self.att - 0.3
         if self.arttsd is None:
@@ -142,7 +145,7 @@ class AslRestModel(Model):
 
         # This is used for casting up various values to full-sized vectors, 
         # which ensures shape compatability in tf 
-        ones = np.ones(self.data_model.n_nodes, dtype=np.float32)
+        ones = np.ones(self.data_model.n_nodes, dtype=NP_DTYPE)
 
         if not self.artonly:
 
@@ -183,7 +186,7 @@ class AslRestModel(Model):
             # to ensure we are getting the correct initial values for them. 
             self.params = [
                 get_parameter("ftiss", dist="NormalDist", 
-                            mean=1.5, prior_var=1e6, post_var=1.5, 
+                            mean=1.5, prior_var=1e6, post_var=1e3, 
                             post_init=self._init_flow, data_model=data_model,
                             **options)
             ]
@@ -208,8 +211,8 @@ class AslRestModel(Model):
 
                 self.params.append(
                     get_parameter("fwm", dist="NormalDist", 
-                            mean=0.5, prior_var=1e6, post_var=1.5, 
-                            post_init=self._init_flow,
+                            mean=0.5, prior_var=1e6, post_var=10, 
+                            post_init=self._init_flow, data_model=data_model,
                             **options)
                 )
 
@@ -217,7 +220,7 @@ class AslRestModel(Model):
                     self.params.append(
                         get_parameter("deltwm", dist="FoldedNormalDist", 
                                 mean=self.attwm, var=self.attsd**2,
-                                post_init=self._init_delt,
+                                post_init=self._init_delt, data_model=data_model,
                                 **options)
                     )
 
@@ -237,7 +240,7 @@ class AslRestModel(Model):
             self.params.append(
                 get_parameter("fblood", dist="NormalDist",
                               mean=0.0, prior_var=1e6, post_var=1.5,
-                              post_init=self._init_fblood,
+                              post_init=self._init_fblood, data_model=data_model,
                               prior_type="A",
                               **options)
             )
@@ -245,7 +248,7 @@ class AslRestModel(Model):
                 self.params.append(
                     get_parameter("deltblood", dist="FoldedNormalDist", 
                                 mean=self.artt, var=self.arttsd**2,
-                                post_init=self._init_delt,
+                                post_init=self._init_delt, data_model=data_model,
                                 **options)
                 )
 
@@ -268,10 +271,6 @@ class AslRestModel(Model):
         if n_params != len(self.params):
             raise ValueError(f"Model set up to infer {len(self.params)} parameters; "
                 "this many parameter arrays must be supplied")
-
-        if np.all(tf.shape(params[0])[0] != self.data_model.n_nodes): 
-            raise ValueError("Shape mismatch: each parameter array must have first dimension"
-                                f" of size equal to number of nodes ({self.data_model.n_nodes})")
 
         # Extract parameter tensors
         t = tf.identity(tpts, name="tpts")
@@ -358,6 +357,7 @@ class AslRestModel(Model):
         # If these variables are np arrays, they may be under-sized compared to t,
         # so expand them up (tensorflow is very fussy about broadcasting)
         ndim = max([len(t.shape), len(ftiss.shape)])
+        # FIXME this can probs go due to upgrade to tf2 
         if isinstance(ftiss, np.ndarray): ftiss = self.expand_dims(ftiss, ndim)
         if isinstance(delt, np.ndarray): delt = self.expand_dims(delt, ndim)
         if isinstance(t1, np.ndarray): t1 = self.expand_dims(t1, ndim)
@@ -368,7 +368,7 @@ class AslRestModel(Model):
         # Boolean masks indicating which voxel-timepoints are during the
         # bolus arrival and which are after
         # delt = (flag) * delt + (1-flag) * tf.stop_gradient(delt)
-        post_bolus = tf.identity(tf.greater(t, tf.add(self.tau, delt), name="post_bolus"))
+        post_bolus = tf.greater(t, self.tau + delt)
         during_bolus = tf.logical_and(tf.greater(t, delt), tf.logical_not(post_bolus))
 
         # Rate constants
@@ -393,7 +393,7 @@ class AslRestModel(Model):
 
         # Build the signal from the during and post bolus components leaving as zero
         # where neither applies (i.e. pre bolus)
-        signal = tf.zeros(tf.shape(during_bolus_signal))
+        signal = tf.zeros(tf.shape(during_bolus_signal), dtype=TF_DTYPE)
         signal = tf.where(during_bolus, during_bolus_signal, signal)
         signal = tf.where(post_bolus, post_bolus_signal, signal)
 
@@ -477,31 +477,43 @@ class AslRestModel(Model):
         Initial value for the flow parameter
         """
 
-        f = tf.math.maximum(data.mean(-1).astype(NP_DTYPE), 0.1)
+        # f = tf.math.maximum(data.mean(-1).astype(NP_DTYPE), 0.1)
 
         if self.data_model.is_volumetric: 
+            f = data.mean(-1)
+            fgm = f / np.maximum(self.pvgm, 0.5)
+            fwm = 1.5 * (1 - self.pvgm) * f
             if not self.pvcorr:
                 return f, None
             else: 
                 # Intialisation for volumetric PVEc: assume a CBF ratio of 3:1
-                fwm = f / (1 + 2*self.pvgm)
                 if _param.name == 'fwm':
                     return fwm, None
                 else: 
-                    return 3 * fwm, None 
+                    return fgm, None 
 
         elif self.data_model.is_hybrid: 
-            fn = self.data_model.voxels_to_nodes((1.5 * f)[:,None], edge_scale=True)
-            fn = tf.squeeze(fn)
+            mask = self.data_model.mask_flattened
+            pvgm, pvwm = self.data_model.projector.pvs().reshape(-1,3)[mask,:2].T
+            # data = data / np.maximum((pvgm + pvwm), 0.5)[:,None]
+
+            f = data.mean(-1)
+            fgm = f / np.maximum(pvgm, 0.5)
+            fwm = 1.3 * (1 - pvgm) * f
+
+            fwm_nodes = np.squeeze(self.data_model.voxels_to_nodes(fwm.astype(np.float32), edge_scale=False))
+            fgm_nodes = np.squeeze(self.data_model.voxels_to_nodes(fgm.astype(np.float32), edge_scale=False))
+
             # WARNING: we are assuming all subcortical ROIs are GM here... 
             f_hybrid = tf.concat([
-                fn[self.data_model.surf_slicer], 
-                fn[self.data_model.vol_slicer] * 0.5, 
-                fn[self.data_model.subcortical_slicer]], axis=0)
+                fgm_nodes[self.data_model.surf_slicer], 
+                fwm_nodes[self.data_model.vol_slicer], 
+                fgm_nodes[self.data_model.subcortical_slicer]], axis=0)
+
             return f_hybrid, None 
 
         else:
-            f_surf = tf.squeeze(self.data_model.voxels_to_nodes(f[:,None], edge_scale=True))
+            f_surf = tf.squeeze(self.data_model.voxels_to_nodes(f[:,None], edge_scale=False))
             return f_surf, None 
 
 
@@ -513,22 +525,23 @@ class AslRestModel(Model):
         return tf.math.maximum(tf.reduce_max(data, axis=1), 0.1), None
 
 
-    def _init_delt(self, _param, t, data):
+    def _init_delt(self, _param, t_node, data):
         """
         Initial value for the delttiss parameter
         """
         if self.att_init == "max":
-            max_idx = tf.expand_dims(tf.math.argmax(data, axis=1), -1)
-            time_max = tf.squeeze(self.tis[max_idx])
+            t_vox = self.data_model.nodes_to_voxels(t_node, edge_scale=False)
+            max_idx = tf.math.argmax(data, axis=1)
+            time_max = tf.gather(t_vox, max_idx, batch_dims=1)
 
             if self.data_model.is_volumetric: 
 
-            if _param.name == 'fwm': 
-                return (time_max + 0.3 - self.tau, 
-                            self.attsd * tf.ones_like(time_max))
-            else: 
-                return (time_max - self.tau, 
-                            self.attsd * tf.ones_like(time_max))
+                if _param.name == 'deltwm': 
+                    return (time_max + 0.3 - self.tau, 
+                            self.attsd ** 2)
+                else: 
+                    return (time_max - self.tau, 
+                            self.attsd ** 2)
 
             elif self.data_model.is_pure_surface: 
                 raise NotImplementedError() 
@@ -541,19 +554,16 @@ class AslRestModel(Model):
                     time_max[self.data_model.vol_slicer] + 0.3 - self.tau, 
                     time_max[self.data_model.subcortical_slicer] - self.tau], axis=0)
 
-                return att, self.attsd * tf.ones_like(time_max) 
+                return att, self.attsd ** 2
 
         # FIXME the below is out of date 
-        # elif self.data_model.is_volumetric:
-        #     if _param.name == 'fwm': 
-        #         return self.attwm, self.attsd
-        #     else: 
-        #         return self.att, self.attsd
-        # elif self.data_model.is_hybrid: 
-        #     att_init = np.ones(self.data_model.n_nodes, dtype=np.float32)
-        #     att_init[self.data_model.surf_slicer] = self.att 
-        #     att_init[self.data_model.vol_slicer] = self.attwm
-        #     return att_init, self.attsd
+        elif self.data_model.is_volumetric:
+            if _param.name == 'fwm': 
+                return self.attwm, self.attsd ** 2
+            else: 
+                return self.att, self.attsd ** 2
+        elif self.data_model.is_hybrid: 
+            return self.att, self.attsd ** 2
         else: 
             return _param.prior.dist.ext_mean, _param.prior.dist.ext_var
 
@@ -577,6 +587,6 @@ class AslRestModel(Model):
                 value = value[self.data_model.mask_flattened]
 
         ones = np.ones(self.data_model.n_nodes)
-        value = (ones * value).astype(np.float32)
+        value = (ones * value).astype(NP_DTYPE)
         return value 
         
