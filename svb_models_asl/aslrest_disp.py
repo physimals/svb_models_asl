@@ -1,16 +1,13 @@
 """
 Inference forward models for ASL data with dispersion
 """
-try:
-    import tensorflow.compat.v1 as tf
-except ImportError:
-    import tensorflow as tf
+
+import tensorflow as tf
 
 import tensorflow_probability as tfp
 import numpy as np
 
 from svb.model import Model, ModelOption
-from svb.parameter import get_parameter
 
 from svb_models_asl import __version__
 from svb_models_asl.aslrest import AslRestModel
@@ -31,10 +28,10 @@ class AslRestDisp(AslRestModel):
         AslRestModel.__init__(self, data_model, **options)
         if self.infer_disp_params:
             self.params.append(
-                get_parameter("s", dist="LogNormal", mean=7.4, var=2.0, **options)
+                self.attach_param("s", dist="LogNormal", mean=7.4, var=2.0, **options)
             )
             self.params.append(
-                get_parameter("sp", dist="LogNormal", mean=0.74, var=2.0, **options)
+                self.attach_param("sp", dist="LogNormal", mean=0.74, var=2.0, **options)
             )
 
         # t values for numerical evaluation of convolution [NT]

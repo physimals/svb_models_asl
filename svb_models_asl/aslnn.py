@@ -5,10 +5,7 @@ import random
 import os
 import os.path
 
-try:
-    import tensorflow.compat.v1 as tf
-except ImportError:
-    import tensorflow as tf
+import tensorflow as tf
 
 import numpy as np
 from fabber import Fabber
@@ -24,8 +21,7 @@ try:
 except ImportError:
     from svb import DataModel as VolumetricModel
     
-from svb.parameter import get_parameter
-import svb.dist as dist
+import svb.distribution as dist
 import svb.prior as prior
         
 class AslNNModel(Model):
@@ -71,11 +67,11 @@ class AslNNModel(Model):
             self.repeats = self.repeats[0]
 
         self.params = [
-            get_parameter("ftiss", dist="LogNormal", 
+            self.attach_param("ftiss", dist="LogNormal", 
                           mean=1.5, prior_var=1e6, post_var=1.5, 
                           post_init=self._init_flow,
                           **options),
-            get_parameter("delttiss", dist="FoldedNormal", 
+            self.attach_param("delttiss", dist="FoldedNormal", 
                           mean=self.att, var=self.attsd**2,
                           **options)
         ]
