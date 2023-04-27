@@ -114,30 +114,30 @@ class AslRestModel(Model):
             self.inferart = True
 
         if not self.artonly:
-            self.attach_param("ftiss", dist="FoldedNormal", 
+            self.attach_param("ftiss", dist="FoldedNormal", edge_scale=True,
                             mean=1.5, prior_var=1e6, post_var=1e2, 
                             post_init=self._init_flow, **options)
 
             if self.inferatt: 
-                self.attach_param("delttiss", dist="FoldedNormal", 
+                self.attach_param("delttiss", dist="FoldedNormal", edge_scale=False,
                                 mean=self.att, var=self.attsd**2,
                                 post_init=self._init_delt, **options)
 
         if self.infert1:
             raise NotImplementedError() 
-            self.attach_param("t1", mean=self.t1, var=0.01, **options)
+            self.attach_param("t1", mean=self.t1, var=0.01, edge_scale=False, **options)
 
 
         if self.inferart:
             raise NotImplementedError()
             self.leadscale = 0.01
-            self.attach_param("fblood", dist="FoldedNormal",
+            self.attach_param("fblood", dist="FoldedNormal", edge_scale=True,
                               mean=0.0, prior_var=1e6, post_var=1.5,
                               post_init=self._init_fblood,
                               prior_type="A", **options)
 
             if self.inferatt:
-                self.attach_param("deltblood", dist="FoldedNormal", 
+                self.attach_param("deltblood", dist="FoldedNormal", edge_scale=False,
                                 mean=self.artt, var=self.arttsd**2,
                                 post_init=self._init_delt,
                                 **options)
