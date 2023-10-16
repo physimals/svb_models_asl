@@ -1,5 +1,5 @@
 SVB models for ASL 
 ==================
 
-For documentation see <https://svb.readthedocs.io/>
+For documentation see <https://ssvb.readthedocs.io/>
 

@@ -13,7 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import nibabel as nib
 
-from svb.main import run
+from ssvb.main import run
 
 model = "aslrest"
 outdir = "asl_example_sim_out"
@@ -39,5 +39,5 @@ options = {
     "force_num_latent_loss" : True,
 }
 
-runtime, svb, training_history = run("sig.nii.gz", model, outdir, **options)
+runtime, ssvb, training_history = run("sig.nii.gz", model, outdir, **options)
 

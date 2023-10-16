@@ -13,7 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import nibabel as nib
 
-from svb.main import run
+from ssvb.main import run
 
 model = "aslrest"
 outdir = "asl_example_out"
@@ -42,7 +42,7 @@ options = {
     "train_load" : "trained_data",
 }
 
-runtime, svb, training_history = run("asldata_diff.nii.gz", model, outdir, mask="asldata_mask.nii.gz", **options)
+runtime, ssvb, training_history = run("asldata_diff.nii.gz", model, outdir, mask="asldata_mask.nii.gz", **options)
 
 ftiss_img = nib.load("%s/mean_ftiss.nii.gz" % outdir).get_data()
 delttiss_img = nib.load("%s/mean_delttiss.nii.gz" % outdir).get_data()

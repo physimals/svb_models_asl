@@ -79,7 +79,7 @@ KWARGS = {
     'description' : 'SVB models for ASL',
     'long_description' : get_filetext(MODULE_DIR, 'README.md'),
     'long_description_content_type' : 'text/markdown',
-    'url' : 'https://svb.readthedocs.io/',
+    'url' : 'https://ssvb.readthedocs.io/',
     'author' : 'Martin Craig',
     'author_email' : 'martin.craig@eng.ox.ac.uk',
     'license' : 'Apache-2.0',
@@ -87,7 +87,7 @@ KWARGS = {
     'packages' : find_packages(),
     'package_data' : {},
     'entry_points' : {
-        'svb.models' : [
+        'ssvb.models' : [
             'aslnn=svb_models_asl:AslNNModel',
             'aslrest=svb_models_asl:AslRestModel',
             'aslrest_disp=svb_models_asl:AslRestDisp',

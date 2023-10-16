@@ -7,7 +7,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
 
-from svb.model import Model, ModelOption
+from ssvb.model import Model, ModelOption
 
 from svb_models_asl import __version__
 from svb_models_asl.aslrest import AslRestModel

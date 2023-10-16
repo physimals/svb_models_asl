@@ -8,21 +8,18 @@ import os.path
 import tensorflow as tf
 
 import numpy as np
-from fabber import Fabber
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score
 
-from svb import __version__
-from svb.model import Model, ModelOption, ValueList
+from ssvb import __version__
+from ssvb.model import Model, ModelOption, ValueList
 from .aslrest import AslRestModel
 try:
-    from svb import VolumetricModel
+    from ssvb import VolumetricModel
 except ImportError:
-    from svb import DataModel as VolumetricModel
+    from ssvb import DataModel as VolumetricModel
     
-import svb.distribution as dist
-import svb.prior as prior
         
 class AslNNModel(Model):
     """
@@ -156,7 +153,7 @@ class AslNNModel(Model):
         else:
             # Train model using simulated data and report performance
             # on simulated test data set
-            x_train, x_test, y_train, y_test = self._get_training_data_svb(n=self.train_examples)
+            x_train, x_test, y_train, y_test = self._get_training_data_ssvb(n=self.train_examples)
             self._train_nn(x_train, y_train, self.train_steps, self.train_lr, batch_size=self.train_batch_size)
             
             y_pred = self._ievaluate_nn(x_test)
@@ -165,7 +162,7 @@ class AslNNModel(Model):
             if self.train_save:
                 self._save_nn(self.train_save)
 
-    def _get_training_data_svb(self, n, **kwargs):
+    def _get_training_data_ssvb(self, n, **kwargs):
         """
         Generate training data by evaluating SVB model
         """

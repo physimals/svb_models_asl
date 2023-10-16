@@ -1,7 +1,7 @@
 import logging
 import numpy as np
 
-from svb import DataModel
+from ssvb import DataModel
 
 from fabber import Fabber
 

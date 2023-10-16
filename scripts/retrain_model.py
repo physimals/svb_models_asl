@@ -2,9 +2,9 @@ import logging
 
 import numpy as np
 
-from svb import DataModel
+from ssvb import DataModel
 
-from svb_models_asl import AslNNModel
+from ssvb_models_asl import AslNNModel
 
 tis = [2.05, 2.3, 2.55, 2.8, 3.05, 3.3]
 options = {

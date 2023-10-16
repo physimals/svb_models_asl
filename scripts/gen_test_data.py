@@ -7,7 +7,7 @@ import sklearn.metrics
 
 import nibabel as nib
 
-from svb import DataModel
+from ssvb import DataModel
 from svb_models_asl import AslRestModel, AslNNModel
 import logging
 logging.getLogger().setLevel(logging.INFO)

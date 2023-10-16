@@ -13,7 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import nibabel as nib
 
-from svb.main import run
+from ssvb.main import run
 
 model = "aslnn"
 outdir = "asl_example_sim_nn_out"
@@ -40,5 +40,5 @@ options = {
     "train_load" : "trained_data",
 }
 
-runtime, svb, training_history = run("sig.nii.gz", model, outdir, **options)
+runtime, ssvb, training_history = run("sig.nii.gz", model, outdir, **options)
 
