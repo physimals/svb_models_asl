@@ -1,5 +1,6 @@
 """Inference forward models for ASL data"""
 
+import nibabel as nib
 import numpy as np
 import tensorflow as tf
 from scipy import stats
@@ -39,6 +40,20 @@ class AslRestModel(Model):
             units="s",
             type=ValueList(int),
             default=[1],
+        ),
+        ModelOption(
+            "slicedt",
+            "Increase in TI/PLD per slice in Z direction",
+            units="s",
+            type=float,
+            default=0,
+        ),
+        ModelOption(
+            "slicedt_img",
+            "3D image giving timing offset at each voxel in acquisition data",
+            units="s",
+            type=str,
+            default=None,
         ),
         # Tissue properties
         ModelOption("t1", "Tissue T1 value", units="s", type=float, default=1.3),
@@ -134,15 +149,17 @@ class AslRestModel(Model):
         # Repeats are supposed to be a list but can be a single number
         if isinstance(self.repeats, (int, np.integer)):
             self.repeats = [self.repeats]
-
-        # For now we only support fixed repeats
         if len(self.repeats) == 1:
-            # FIXME variable repeats
-            self.repeats = self.repeats[0]
-        elif len(self.repeats) > 1 and any(
-            [r != self.repeats[0] for r in self.repeats]
-        ):
-            raise NotImplementedError("Variable repeats for TIs/PLDs")
+            self.repeats = self.repeats * len(self.tis)
+        elif len(self.repeats) != len(self.tis):
+            raise ValueError("Number of repeats must match number of TIs/PLDs")
+
+        # Slice timing offsets
+        if self.slicedt and self.slicedt_img is not None:
+            raise ValueError("Cannot specify both slicedt and slicedt_img")
+        if self.slicedt_img:
+            if isinstance(self.slicedt_img, str):
+                self.slicedt_img = nib.load(self.slicedt_img).get_fdata()
 
         name = "cbf"
         if options.get(f"infer_{name}", False):
@@ -337,26 +354,47 @@ class AslRestModel(Model):
 
         return artcbf * signal
 
-    # TODO: allow model to accept a tivol directly for fitting in
-    # non-ASL space where standard slicedt correction doesn't work
     def tpts_vol(self, data_model) -> tf.Tensor:
         """
         Generate dense tensor of per-node timepoint values
 
         :return tensor of size [W,T]
         """
-        if data_model.n_tpts != len(self.tis) * self.repeats:
+        ntpts = data_model.n_tpts
+        if ntpts != sum(self.repeats):
             raise ValueError(
                 "ASL model configured with %i time points, but data has %i"
-                % (len(self.tis) * self.repeats, data_model.n_tpts)
+                % (sum(self.repeats), ntpts)
             )
 
-        # FIXME assuming grouped by TIs/PLDs
-        tis_repeated = tf.repeat(self.tis, self.repeats)
-        t = tf.broadcast_to(tis_repeated, [*data_model.vol_shape, len(tis_repeated)])
+        # Note that this assumes data grouped by TIs/PLDs which is required for variable repeats
+        base_tpts = np.array(
+            sum([[ti] * rpts for ti, rpts in zip(self.tis, self.repeats)], [])
+        )
+        acq_shape = list(data_model.data_vol.shape[:3])
 
-        # Discard voxels not in the mask
+        if self.slicedt_img is None:
+            self.slicedt_img = np.zeros(acq_shape, dtype=NP_DTYPE)
+            if self.slicedt is not None:
+                # Generate timings volume using the slicedt value
+                for z in range(acq_shape[2]):
+                    self.slicedt_img[:, :, z] = z * self.slicedt
+        else:
+            shape = list(self.slicedt_img.shape)
+            if len(shape) != 3:
+                raise ValueError(f"Slice DT image must be 3D - has shape: {shape}")
+            if shape != acq_shape:
+                raise ValueError(
+                    f"Slice DT image shape does not match acquired data: {shape} vs {acq_shape}"
+                )
+
+        t = (
+            self.slicedt_img[..., None] + base_tpts[None, None, None, :]
+        )  # [NX, NY, NZ, NT]
+
+        # Apply mask
         t = t[data_model.vol_mask > 0]
+
         return t
 
     def _init_cbf(self, data_model) -> tf.Tensor:
