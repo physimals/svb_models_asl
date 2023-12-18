@@ -1,52 +1,89 @@
 """
 Inference forward model for ASL data using neural network
 """
-import random
 import os
 import os.path
-
-import tensorflow as tf
+import random
 
 import numpy as np
-
-from sklearn.model_selection import train_test_split
+import tensorflow as tf
 from sklearn.metrics import r2_score
-
+from sklearn.model_selection import train_test_split
 from ssvb import __version__
 from ssvb.model import Model, ModelOption, ValueList
+
 from .aslrest import AslRestModel
-try:
-    from ssvb import VolumetricModel
-except ImportError:
-    from ssvb import DataModel as VolumetricModel
-    
-        
+
+
 class AslNNModel(Model):
     """
     ASL resting state model using NN for evaluation
-    
+
     The network is trained using simulated data from the analytic ASLREST
     model
     """
+
     OPTIONS = [
-        ModelOption("tau", "Bolus duration", units="s", clargs=("--tau", "--bolus"), type=float, default=1.8),
+        ModelOption(
+            "tau",
+            "Bolus duration",
+            units="s",
+            clargs=("--tau", "--bolus"),
+            type=float,
+            default=1.8,
+        ),
         ModelOption("casl", "Data is CASL/pCASL", type=bool, default=False),
         ModelOption("att", "Bolus arrival time", units="s", type=float, default=1.3),
-        ModelOption("attsd", "Bolus arrival time prior std.dev.", units="s", type=float, default=None),
+        ModelOption(
+            "attsd",
+            "Bolus arrival time prior std.dev.",
+            units="s",
+            type=float,
+            default=None,
+        ),
         ModelOption("t1", "Tissue T1 value", units="s", type=float, default=1.3),
         ModelOption("t1b", "Blood T1 value", units="s", type=float, default=1.65),
         ModelOption("tis", "Inversion times", units="s", type=ValueList(float)),
-        ModelOption("plds", "Post-labelling delays (for CASL instead of TIs)", units="s", type=ValueList(float)),
-        ModelOption("repeats", "Number of repeats - single value or one per TI/PLD", units="s", type=ValueList(int), default=1),
-        ModelOption("slicedt", "Increase in TI/PLD per slice", units="s", type=float, default=0),
-        ModelOption("pc", "Blood/tissue partition coefficient", type=float, default=0.9),
-        ModelOption("fcalib", "Perfusion value to use in estimation of effective T1", type=float, default=0.01),
-        ModelOption("train_ti_max", "Maximum TI to train for", type=float, default=20.0),
-        ModelOption("train_delttiss_max", "Maximum value of ATT to train for", type=float, default=3.0),
+        ModelOption(
+            "plds",
+            "Post-labelling delays (for CASL instead of TIs)",
+            units="s",
+            type=ValueList(float),
+        ),
+        ModelOption(
+            "repeats",
+            "Number of repeats - single value or one per TI/PLD",
+            units="s",
+            type=ValueList(int),
+            default=1,
+        ),
+        ModelOption(
+            "slicedt", "Increase in TI/PLD per slice", units="s", type=float, default=0
+        ),
+        ModelOption(
+            "pc", "Blood/tissue partition coefficient", type=float, default=0.9
+        ),
+        ModelOption(
+            "fcalib",
+            "Perfusion value to use in estimation of effective T1",
+            type=float,
+            default=0.01,
+        ),
+        ModelOption(
+            "train_ti_max", "Maximum TI to train for", type=float, default=20.0
+        ),
+        ModelOption(
+            "train_delttiss_max",
+            "Maximum value of ATT to train for",
+            type=float,
+            default=3.0,
+        ),
         ModelOption("train_lr", "Training learning rate", type=float, default=0.001),
         ModelOption("train_steps", "Training steps", type=int, default=30000),
         ModelOption("train_batch_size", "Training batch size", type=int, default=100),
-        ModelOption("train_examples", "Number of training examples", type=int, default=500),
+        ModelOption(
+            "train_examples", "Number of training examples", type=int, default=500
+        ),
         ModelOption("train_save", "Directory to save trained model weights to"),
         ModelOption("train_load", "Directory to load trained model weights from"),
     ]
@@ -64,13 +101,18 @@ class AslNNModel(Model):
             self.repeats = self.repeats[0]
 
         self.params = [
-            self.attach_param("ftiss", dist="LogNormal", 
-                          mean=1.5, prior_var=1e6, post_var=1.5, 
-                          post_init=self._init_flow,
-                          **options),
-            self.attach_param("delttiss", dist="FoldedNormal", 
-                          mean=self.att, var=self.attsd**2,
-                          **options)
+            self.attach_param(
+                "ftiss",
+                dist="Normal",
+                mean=1.5,
+                prior_var=1e6,
+                post_var=1.5,
+                post_init=self._init_flow,
+                **options
+            ),
+            self.attach_param(
+                "delttiss", dist="Normal", mean=self.att, var=self.attsd**2, **options
+            ),
         ]
 
         self.variable_weights = []
@@ -90,7 +132,7 @@ class AslNNModel(Model):
         :param t: Time values of shape 1x1xN or Mx1xN
         :param params Sequence of parameter values arrays, one for each parameter.
                       Each array is MxSx1 tensor where M is the number of voxels and S
-                      the number of samples. This may be supplied as a PxMxSx1 tensor 
+                      the number of samples. This may be supplied as a PxMxSx1 tensor
                       where P is the number of parameters.
 
         :return: MxSxN tensor containing model output at the specified time values
@@ -101,33 +143,52 @@ class AslNNModel(Model):
 
         # Extract parameter tensors
         t = self.log_tf(tpts, name="tpts", shape=True, force=False)
-        ftiss = self.log_tf(params[0], name="ftiss", shape=True, force=False) # [M, S]
-        delt = self.log_tf(params[1], name="delt", shape=True, force=False) # [M, S]
+        ftiss = self.log_tf(params[0], name="ftiss", shape=True, force=False)  # [M, S]
+        delt = self.log_tf(params[1], name="delt", shape=True, force=False)  # [M, S]
 
-        # Tile time points and delt to MxSxN    
+        # Tile time points and delt to MxSxN
         tshape = tf.shape(t)
         dshape = tf.shape(delt)
-        t = self.log_tf(tf.reshape(t, (tshape[0], 1, tshape[-1])), shape=True, force=False, name="t1")
-        t = self.log_tf(tf.tile(t, (dshape[0]/tshape[0], dshape[1], 1)), shape=True, force=False, name="ttield")
+        t = self.log_tf(
+            tf.reshape(t, (tshape[0], 1, tshape[-1])),
+            shape=True,
+            force=False,
+            name="t1",
+        )
+        t = self.log_tf(
+            tf.tile(t, (dshape[0] / tshape[0], dshape[1], 1)),
+            shape=True,
+            force=False,
+            name="ttield",
+        )
         delt = tf.reshape(delt, (dshape[0], dshape[1], 1))
-        delt = self.log_tf(tf.tile(delt, (1, 1, tshape[-1])), shape=True, force=False, name="delttiled")
+        delt = self.log_tf(
+            tf.tile(delt, (1, 1, tshape[-1])), shape=True, force=False, name="delttiled"
+        )
 
         # Evaluate the NN using the TI and delttiss parameters then
         # multiply by f to get the scaled output
         signal = self._evaluate_nn(tf.stack([t, delt], axis=-1))
         signal = self.log_tf(tf.squeeze(signal), name="sig", shape=True, force=False)
-        return self.log_tf(tf.multiply(ftiss, signal), name="scaled", shape=True, force=False)
-        
+        return self.log_tf(
+            tf.multiply(ftiss, signal), name="scaled", shape=True, force=False
+        )
+
     def tpts(self):
         if self.data_model.n_tpts != len(self.tis) * self.repeats:
-            raise ValueError("ASL model configured with %i time points, but data has %i" % (len(self.tis)*self.repeats, self.data_model.n_tpts))
+            raise ValueError(
+                "ASL model configured with %i time points, but data has %i"
+                % (len(self.tis) * self.repeats, self.data_model.n_tpts)
+            )
 
         # FIXME assuming grouped by TIs/PLDs
         if self.slicedt > 0:
             # Generate voxelwise timings array using the slicedt value
             t = np.zeros(list(self.data_model.shape) + [self.data_model.n_tpts])
             for z in range(self.data_model.shape[2]):
-                t[:, :, z, :] = np.array(sum([[ti + z*self.slicedt] * self.repeats for ti in self.tis], []))
+                t[:, :, z, :] = np.array(
+                    sum([[ti + z * self.slicedt] * self.repeats for ti in self.tis], [])
+                )
         else:
             # Timings are the same for all voxels
             t = np.array(sum([[ti] * self.repeats for ti in self.tis], []))
@@ -153,12 +214,23 @@ class AslNNModel(Model):
         else:
             # Train model using simulated data and report performance
             # on simulated test data set
-            x_train, x_test, y_train, y_test = self._get_training_data_ssvb(n=self.train_examples)
-            self._train_nn(x_train, y_train, self.train_steps, self.train_lr, batch_size=self.train_batch_size)
-            
+            x_train, x_test, y_train, y_test = self._get_training_data_ssvb(
+                n=self.train_examples
+            )
+            self._train_nn(
+                x_train,
+                y_train,
+                self.train_steps,
+                self.train_lr,
+                batch_size=self.train_batch_size,
+            )
+
             y_pred = self._ievaluate_nn(x_test)
             accuracy = r2_score(y_pred, y_test)
-            self.log.info(' - Trained model using %i steps and %.5f learning rate - accuracy %.3f' % (self.train_steps, self.train_lr, accuracy))
+            self.log.info(
+                " - Trained model using %i steps and %.5f learning rate - accuracy %.3f"
+                % (self.train_steps, self.train_lr, accuracy)
+            )
             if self.train_save:
                 self._save_nn(self.train_save)
 
@@ -167,15 +239,15 @@ class AslNNModel(Model):
         Generate training data by evaluating SVB model
         """
         options = {
-            "model" : "buxton",
-            'lambda': 0.9,
-            'tau' : self.tau,
-            'ti' : self.tis,
-            't1b': self.t1b,
-            "prior-noise-stddev" : 1,
-            'casl': True,
-            'repeats': 1,
-            't1': self.t1,
+            "model": "buxton",
+            "lambda": 0.9,
+            "tau": self.tau,
+            "ti": self.tis,
+            "t1b": self.t1b,
+            "prior-noise-stddev": 1,
+            "casl": True,
+            "repeats": 1,
+            "t1": self.t1,
         }
         options.update(**kwargs)
 
@@ -198,7 +270,10 @@ class AslNNModel(Model):
         x[:, 1] = delttiss
         y = np.squeeze(modelsig, axis=-1)
         x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.3)
-        self.log.info(" - Separated %i instances of training data and %i instances of test data" % (x_train.shape[0], x_test.shape[0]))
+        self.log.info(
+            " - Separated %i instances of training data and %i instances of test data"
+            % (x_train.shape[0], x_test.shape[0])
+        )
         return x_train, x_test, y_train, y_test
 
     def _load_nn(self, load_dir):
@@ -212,7 +287,9 @@ class AslNNModel(Model):
             if not os.path.exists(weights_file) and not os.path.exists(biases_file):
                 break
             elif not os.path.exists(weights_file) or not os.path.exists(biases_file):
-                raise RuntimeError("For time point %i, could not find both weights and biases")
+                raise RuntimeError(
+                    "For time point %i, could not find both weights and biases"
+                )
             else:
                 self.trained_weights.append(np.load(weights_file))
                 self.trained_biases.append(np.load(biases_file))
@@ -228,29 +305,50 @@ class AslNNModel(Model):
                           If False, generated fixed network using previously trained weights/biases
         """
         layers = []
-        layers.append(self._add_layer(0, x, 2, 10, activation_function=tf.nn.tanh, trainable=trainable))
-        layers.append(self._add_layer(1, layers[-1], 10, 10, activation_function=tf.nn.tanh, trainable=trainable))
-        layers.append(self._add_layer(2, layers[-1], 10, 1, activation_function=None, trainable=trainable))
+        layers.append(
+            self._add_layer(
+                0, x, 2, 10, activation_function=tf.nn.tanh, trainable=trainable
+            )
+        )
+        layers.append(
+            self._add_layer(
+                1,
+                layers[-1],
+                10,
+                10,
+                activation_function=tf.nn.tanh,
+                trainable=trainable,
+            )
+        )
+        layers.append(
+            self._add_layer(
+                2, layers[-1], 10, 1, activation_function=None, trainable=trainable
+            )
+        )
         return layers
 
-    def _add_layer(self, idx, inputs, in_size, out_size, activation_function=None, trainable=True):
+    def _add_layer(
+        self, idx, inputs, in_size, out_size, activation_function=None, trainable=True
+    ):
         if trainable:
             weights = tf.Variable(tf.random_normal([in_size, out_size]))
             biases = tf.Variable(tf.zeros([1, out_size]) + 0.1)
             self.variable_weights.append(weights)
             self.variable_biases.append(biases)
         elif self.trained_weights is None:
-            raise RuntimeError("Tried to create non-trainable network for evaluation before trainable network has been trained")
+            raise RuntimeError(
+                "Tried to create non-trainable network for evaluation before trainable network has been trained"
+            )
         else:
             weights = tf.constant(self.trained_weights[idx])
             biases = tf.constant(self.trained_biases[idx])
-            
+
         Wx_plus_b = tf.matmul(inputs, weights) + biases
-        if activation_function is None:  
+        if activation_function is None:
             outputs = Wx_plus_b
-        else:  
+        else:
             outputs = activation_function(Wx_plus_b)
-        return outputs  
+        return outputs
 
     def _train_nn(self, x_train, y_train, steps, learning_rate, batch_size=100):
         """
@@ -265,21 +363,28 @@ class AslNNModel(Model):
             y_input = tf.placeholder(tf.float32, [None, 1])
             layers = self._create_nn(x_input, trainable=True)
             prediction = layers[-1]
-            loss = tf.reduce_mean(tf.reduce_sum(tf.square(y_input - prediction), reduction_indices=[1]))
+            loss = tf.reduce_mean(
+                tf.reduce_sum(tf.square(y_input - prediction), reduction_indices=[1])
+            )
             optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
 
             sess = tf.Session()
             sess.run(tf.global_variables_initializer())
             import math
+
             n_batches = math.ceil(x_train.shape[0] / batch_size)
-            self.log.info(" - Batch size %i, number of batches %i" % (batch_size, n_batches))
+            self.log.info(
+                " - Batch size %i, number of batches %i" % (batch_size, n_batches)
+            )
             for step in range(steps):
                 mean_loss = 0
                 for batch in range(n_batches):
                     x = x_train[batch:-1:n_batches, :]
                     y = y_train[batch:-1:n_batches, np.newaxis]
 
-                    batch_loss, optimizer_ = sess.run([loss, optimizer], feed_dict={x_input: x, y_input: y})
+                    batch_loss, optimizer_ = sess.run(
+                        [loss, optimizer], feed_dict={x_input: x, y_input: y}
+                    )
                     mean_loss += batch_loss
                 mean_loss = mean_loss / n_batches
                 if step % 100 == 0:
@@ -303,7 +408,7 @@ class AslNNModel(Model):
 
     def _ievaluate_nn(self, x):
         """
-        Evaluate the trained model interactively 
+        Evaluate the trained model interactively
         (i.e. return the actual answer as a Numpy array not
         as a TensorFlow operation)
 
@@ -324,10 +429,10 @@ class AslNNModel(Model):
         """
         if self.trained_weights is None:
             raise RuntimeError("Can't save model before it has been trained!")
-        
+
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        
+
         for idx, wb in enumerate(zip(self.trained_weights, self.trained_biases)):
             np.save(os.path.join(save_dir, "weights%i.npy" % idx), wb[0])
             np.save(os.path.join(save_dir, "biases%i.npy" % idx), wb[1])

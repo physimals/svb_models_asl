@@ -5,3 +5,9 @@ dist
 scripts/*out*
 *.egg-info
 *__pycache__*
+*.nii.gz 
+*.func.gii
+*.npz
+*.txt
+.DS_Store
+logfile 

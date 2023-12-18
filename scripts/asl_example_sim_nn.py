@@ -21,24 +21,23 @@ outdir = "asl_example_sim_nn_out"
 # Inference options
 # Note for complete convergence should probably have epochs=500 but this takes a while
 options = {
-    "tau" : 1.8,
-    "casl" : True,
-    "plds" : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
-    "repeats" : [1],
-    "learning_rate" : 0.05,
-    "sample_size" : 10,
-    "epochs" : 5000,
-    "log_stream" : sys.stdout,
-    "save_mean" : True,
-    "save_var" : True,
-    "save_param_history" : True,
-    "save_cost" : True,
-    "save_cost_history" : True,
-    "save_model_fit" : True,
-    "save_log" : True,
-    "force_num_latent_loss" : True,
-    "train_load" : "trained_data",
+    "tau": 1.8,
+    "casl": True,
+    "plds": [0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
+    "repeats": [1],
+    "learning_rate": 0.05,
+    "sample_size": 10,
+    "epochs": 5000,
+    "log_stream": sys.stdout,
+    "save_mean": True,
+    "save_var": True,
+    "save_param_history": True,
+    "save_cost": True,
+    "save_cost_history": True,
+    "save_model_fit": True,
+    "save_log": True,
+    "force_num_latent_loss": True,
+    "train_load": "trained_data",
 }
 
 runtime, ssvb, training_history = run("sig.nii.gz", model, outdir, **options)
-

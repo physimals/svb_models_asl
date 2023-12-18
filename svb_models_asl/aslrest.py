@@ -1,17 +1,13 @@
 """Inference forward models for ASL data"""
 
-import tensorflow as tf
 import numpy as np
-from scipy import ndimage
-import tensorflow_probability as tfp
-
+import tensorflow as tf
+from scipy import stats
 from ssvb.model import Model, ModelOption
-from ssvb.utils import ValueList, NP_DTYPE, TF_DTYPE
-from ssvb.structure import Cortex
+from ssvb.structure import Cortex, Volumetric
+from ssvb.utils import NP_DTYPE, TF_DTYPE, ValueList
 
 from svb_models_asl import __version__
-
-TIME_SCALE = tf.cast(1e0, TF_DTYPE)
 
 
 class AslRestModel(Model):
@@ -27,7 +23,7 @@ class AslRestModel(Model):
             units="s",
             clargs=("--tau", "--bolus"),
             type=float,
-            default=1.8 * TIME_SCALE,
+            default=1.8,
         ),
         ModelOption("casl", "Data is CASL/pCASL", type=bool, default=True),
         ModelOption("tis", "Inversion times", units="s", type=ValueList(float)),
@@ -45,16 +41,14 @@ class AslRestModel(Model):
             default=[1],
         ),
         # Tissue properties
-        ModelOption(
-            "t1", "Tissue T1 value", units="s", type=float, default=1.3 * TIME_SCALE
-        ),
+        ModelOption("t1", "Tissue T1 value", units="s", type=float, default=1.3),
         ModelOption(
             "att",
             "Bolus arrival time",
             units="s",
             clargs=("--bat",),
             type=float,
-            default=1.3 * TIME_SCALE,
+            default=1.3,
         ),
         ModelOption(
             "attsd",
@@ -74,9 +68,7 @@ class AslRestModel(Model):
             "pc", "Blood/tissue partition coefficient.", type=float, default=0.9
         ),
         # Blood properties
-        ModelOption(
-            "t1b", "Blood T1 value", units="s", type=float, default=1.65 * TIME_SCALE
-        ),
+        ModelOption("t1b", "Blood T1 value", units="s", type=float, default=1.65),
         # Arterial properties
         ModelOption("infer_artcbf", "Infer arterial CBF", type=bool, default=None),
         ModelOption("infer_artatt", "Infer arterial ATT", type=bool, default=None),
@@ -100,7 +92,6 @@ class AslRestModel(Model):
         ModelOption(
             "att_init",
             "Initialization method for ATT (max=max signal - bolus duration)",
-            default="",
         ),
         ModelOption("infer_t1", "Infer T1 value", type=bool, default=None),
     ]
@@ -110,15 +101,15 @@ class AslRestModel(Model):
 
         # Default tissue CBF for the case where we are not inferring it.
         # This will almost always be overriden later on
-        self.cbf = options.get("cbf", 0.0)
-        self.artcbf = options.get("artcbf", 0.0)
+        self.cbf = tf.cast(options.get("cbf", 0.0), TF_DTYPE)
+        self.artcbf = tf.cast(options.get("artcbf", 0.0), TF_DTYPE)
 
         # TIs calculated as PLD + bolus duration
         if self.plds is not None:
-            self.plds = tf.constant(self.plds, dtype=TF_DTYPE) * TIME_SCALE
+            self.plds = tf.constant(self.plds, dtype=TF_DTYPE)
             self.tis = self.plds + self.tau
         else:
-            self.tis = tf.constant(self.tis, dtype=TF_DTYPE) * TIME_SCALE
+            self.tis = tf.constant(self.tis, dtype=TF_DTYPE)
             self.plds = self.tis - self.tau
 
         if (self.tis is None) and (self.plds is None):
@@ -128,8 +119,7 @@ class AslRestModel(Model):
             self.att_init = "max"
 
         if self.attsd is None:
-            self.attsd = 0.5 if len(self.tis) > 1 else 0.1
-        self.attsd *= TIME_SCALE
+            self.attsd = 0.75 if len(self.tis) > 1 else 0.1
 
         if self.pc is None:
             self.pc = 0.9
@@ -137,10 +127,9 @@ class AslRestModel(Model):
         self.leadscale = 0.01
         if self.artatt is None:
             self.artatt = self.att - 0.4
-        self.artatt *= TIME_SCALE
+
         if self.artattsd is None:
             self.artattsd = self.attsd
-        self.artattsd *= TIME_SCALE
 
         # Repeats are supposed to be a list but can be a single number
         if isinstance(self.repeats, (int, np.integer)):
@@ -150,63 +139,55 @@ class AslRestModel(Model):
         if len(self.repeats) == 1:
             # FIXME variable repeats
             self.repeats = self.repeats[0]
-        elif len(self.repeats) > 1 and \
-            any([ r != self.repeats[0] for r in self.repeats ]):
+        elif len(self.repeats) > 1 and any(
+            [r != self.repeats[0] for r in self.repeats]
+        ):
             raise NotImplementedError("Variable repeats for TIs/PLDs")
 
         name = "cbf"
-        if getattr(self, f"infer_{name}", options.get(f"infer_{name}", False)):
+        if options.get(f"infer_{name}", False):
             defaults = dict(
-                post_type="Normal",
+                post_dist="F",
                 mean=1.5,
-                post_var=0.5,
+                post_var=1e3,
                 prior_var=1e6,
                 post_init=self._init_cbf,
             )
-            self.attach_param(
-                name,
-                defaults,
-                options,
-            )
+            self.attach_param(name, True, defaults, options)
 
-        # This is where we either set up a parameter (inference),
-        # or set a scalar value used for model evaluation (not inferece)
         name = "att"
-        if getattr(self, f"infer_{name}", options.get(f"infer_{name}", False)):
+        if options.get(f"infer_{name}", False):
             defaults = dict(
-                post_type="LogNormal",
+                post_dist="F",
                 mean=self.att,
                 var=self.attsd**2,
                 post_init=self._init_att,
             )
-            self.attach_param(name, defaults, options)
+            self.attach_param(name, True, defaults, options)
 
-        name = "t1"
-        if getattr(self, f"infer_{name}", options.get(f"infer_{name}", False)):
-            defaults = dict(mean=self.t1, var=0.01)
-            self.attatch_param("t1", defaults, options)
+        # name = "t1"
+        # defaults = dict(mean=self.t1, var=0.01)
+        # self.attach_param("t1", options.get(f"infer_{name}", False), defaults, options)
 
-        name = "artcbf"
-        if getattr(self, f"infer_{name}", options.get(f"infer_{name}", False)):
-            defaults = dict(
-                prior_type="ARD",
-                post_type="Normal",
-                mean=0,
-                prior_var=1e6,
-                post_var=0.5,
-                post_init=self._init_artcbf,
-            )
-            self.attach_param(name, defaults, options)
+        # name = "artcbf"
+        # defaults = dict(
+        #     prior_dist="A",
+        #     post_dist="F",
+        #     mean=0,
+        #     prior_var=1e6,
+        #     post_var=0.5,
+        #     post_init=self._init_artcbf,
+        # )
+        # self.attach_param(name, options.get(f"infer_{name}", False), defaults, options)
 
-        name = "artatt"
-        if getattr(self, f"infer_{name}", options.get(f"infer_{name}", False)):
-            defaults = dict(
-                post_type="Normal",
-                mean=self.artatt,
-                var=self.artattsd**2,
-                post_init=self._init_att,
-            )
-            self.attach_param(name, defaults, options)
+        # name = "artatt"
+        # defaults = dict(
+        #     post_dist="F",
+        #     mean=self.artatt,
+        #     var=self.artattsd**2,
+        #     # post_init=self._init_att,
+        # )
+        # self.attach_param(name, options.get(f"infer_{name}", False), defaults, options)
 
     def __str__(self):
         return f"ASL resting state tissue model version {__version__}"
@@ -223,6 +204,11 @@ class AslRestModel(Model):
     def n_delays(self):
         return len(self.tis)
 
+    # FIXME assumes constant repeats
+    @property
+    def n_tpts(self):
+        return len(self.tis) * self.repeats
+
     def evaluate(self, params: dict[str, tf.Tensor], tpts: tf.Tensor) -> tf.Tensor:
         """
         PASL/pCASL kinetic model for tissue
@@ -235,11 +221,12 @@ class AslRestModel(Model):
         :param fcalib: calibration coefficient
         """
 
+        # Call the base class evaluate method to check shapes
         Model.evaluate(self, params, tpts)
-            
+
         # Default parameters that we will override with caller's
         # All need to have shape [S,N] (add singleton on front)
-        eval_params = {
+        default_params = {
             "cbf": tf.reshape(self.cbf, [1, -1]),
             "att": tf.reshape(self.att, [1, -1]),
             "t1": tf.reshape(self.t1, [1, -1]),
@@ -247,23 +234,21 @@ class AslRestModel(Model):
             "artatt": tf.reshape(self.artatt, [1, -1]),
         }
 
-        # Merge in the caller's params
-        # Add batch dimension on back: [S,N] -> [S,N,1]
-        eval_params.update(params)
-        eval_params = {k: v[..., None] for k, v in eval_params.items()}
+        # Override defaults with caller's parameters
+        default_params.update(params)
 
-        # Add sample dimension on front: [N,T] -> [1,N,T]
-        tpts = tf.expand_dims(tpts, 0)
+        # Reshape params and tpts for broadcasting
+        default_params, tpts = self.reshape_for_evaluate(default_params, tpts)
 
         signal = self.tissue_signal(
-            eval_params["cbf"], eval_params["att"], eval_params["t1"], tpts
+            default_params["cbf"], default_params["att"], default_params["t1"], tpts
         )
-        if ("artcbf" in params) or ("artatt" in params): 
+        if ("artcbf" in params) or ("artatt" in params):
             signal += self.arterial_signal(
-                eval_params["artcbf"], eval_params["artatt"], tpts
+                default_params["artcbf"], default_params["artatt"], tpts
             )
 
-        return signal 
+        return signal
 
     def tissue_signal(self, cbf, att, t1, tpts: tf.Tensor) -> tf.Tensor:
         pc = self.pc
@@ -275,15 +260,12 @@ class AslRestModel(Model):
         during_bolus = (tpts > att) & tf.logical_not(post_bolus)
 
         # Rate constants
-        t1_app = TIME_SCALE / (1 / (t1 / TIME_SCALE) + (fcalib / pc))
-        t1_app = tf.cast(t1_app, TF_DTYPE)
+        t1_app = 1 / (1 / t1 + fcalib / pc)
 
         # Calculate signal
         if self.casl:
             # CASL kinetic model
-            factor = (
-                (2 * t1_app) * tf.cast(tf.exp(-att / self.t1b), TF_DTYPE) / TIME_SCALE
-            )
+            factor = (2 * t1_app) * tf.cast(tf.exp(-att / self.t1b), TF_DTYPE)
             during_bolus_signal = factor * (1 - tf.exp(-(tpts - att) / t1_app))
             post_bolus_signal = (
                 factor
@@ -302,6 +284,9 @@ class AslRestModel(Model):
 
         # Build the signal from the during and post bolus components leaving as zero
         # where neither applies (i.e. pre bolus)
+        # FIXME: small ramp in ATT possibly gives better stability
+        # as it gives a continuous gradient when ATT < min PLD
+        # signal = tf.linspace(0.0, 1e-2 * att[:, :, 0], tf.shape(tpts)[-1], axis=2)
         signal = tf.zeros(tf.shape(during_bolus_signal), dtype=TF_DTYPE)
         signal = tf.where(during_bolus, during_bolus_signal, signal)
         signal = tf.where(post_bolus, post_bolus_signal, signal)
@@ -354,29 +339,27 @@ class AslRestModel(Model):
 
     # TODO: allow model to accept a tivol directly for fitting in
     # non-ASL space where standard slicedt correction doesn't work
-    def tpts_vol(self) -> tf.Tensor:
+    def tpts_vol(self, data_model) -> tf.Tensor:
         """
         Generate dense tensor of per-node timepoint values
 
         :return tensor of size [W,T]
         """
-        if self.data_model.n_tpts != len(self.tis) * self.repeats:
+        if data_model.n_tpts != len(self.tis) * self.repeats:
             raise ValueError(
                 "ASL model configured with %i time points, but data has %i"
-                % (len(self.tis) * self.repeats, self.data_model.n_tpts)
+                % (len(self.tis) * self.repeats, data_model.n_tpts)
             )
 
         # FIXME assuming grouped by TIs/PLDs
         tis_repeated = tf.repeat(self.tis, self.repeats)
-        t = tf.broadcast_to(
-            tis_repeated, [*self.data_model.vol_shape, len(tis_repeated)]
-        )
+        t = tf.broadcast_to(tis_repeated, [*data_model.vol_shape, len(tis_repeated)])
 
         # Discard voxels not in the mask
-        t = t[self.data_model.vol_mask > 0]
+        t = t[data_model.vol_mask > 0]
         return t
 
-    def _init_cbf(self) -> tf.Tensor:
+    def _init_cbf(self, data_model) -> tf.Tensor:
         """
         Initial value for the flow parameter
 
@@ -385,20 +368,22 @@ class AslRestModel(Model):
         :return tensor of size [W]
         """
 
-        data = self.data_model.data_flattened
-        data_mean = tf.math.reduce_mean(data, axis=-1)
+        data = data_model.data_flattened
+        data_filtered = tf.math.reduce_mean(data, axis=-1)
+
+        pv = self.structure.to_voxels(tf.ones(self.structure.n_nodes))
+        pv = tf.maximum(pv, 0.5)
 
         if isinstance(self.structure, Cortex):
-            ones = np.ones(self.structure.n_nodes, NP_DTYPE)
-            pv = self.structure.to_voxels(ones)
-            pv = np.maximum(pv, 0.25)
-            data_mean = data_mean / pv
+            data_filtered = data_filtered / pv
+        elif (type(self.structure) is Volumetric) and data_model.mode == "hybrid":
+            data_filtered = data_filtered * pv
 
-        f_vox = tf.math.maximum(data_mean, 0.1)
+        f_vox = tf.math.maximum(data_filtered, 0.1)
         f_init = self.structure.to_nodes(f_vox)
-        return f_init, f_init / 10 
+        return f_init, f_init / 10
 
-    def _init_att(self) -> tf.Tensor:
+    def _init_att(self, data_model) -> tf.Tensor:
         """
         Initial value for the att parameter
 
@@ -407,26 +392,21 @@ class AslRestModel(Model):
         :return tensor of size [W]
         """
 
-        ones = np.ones(self.structure.n_nodes, NP_DTYPE)
-        pv = self.structure.to_voxels(ones)
+        if not self.is_multidelay:
+            return self.att, self.attsd**2
 
-        data = self.data_model.data_flattened
-        max_idx = tf.math.argmax(data, axis=1)
-        time_max = tf.gather(self.tpts_vol(), max_idx, batch_dims=1)
+        tpts_vol = self.tpts_vol(data_model)
+        max_idx = tf.math.argmax(data_model.data_flattened, axis=1)
+        time_max = tf.gather(tpts_vol, max_idx, batch_dims=1)
+        att = time_max - self.tau
 
-        att_vox = (pv * (time_max - self.tau)) + ((1 - pv) * self.att)
-        att_vox = self.data_model.as_volume(att_vox)
-        att_vox = ndimage.percentile_filter(att_vox, percentile=70, size=(3, 3, 1))
-        att_vox = att_vox.flatten()[self.data_model.vol_mask.flatten()]
+        pv = self.structure.to_voxels(tf.ones(self.structure.n_nodes))
+        pv_thr = np.percentile(pv, 75)
+        att_mode = stats.mode(att[pv >= pv_thr], axis=None).mode
 
-        att_init = self.structure.to_nodes(att_vox)
-        att_init = tf.maximum(att_init, np.percentile(att_init, 33))
-        if np.allclose(np.min(att_init), 0):
-            raise ValueError("calculated initial att value of 0")
+        return att_mode, self.attsd**2
 
-        return att_init, att_init / 10 
-
-    def _init_artcbf(self) -> tf.Tensor:
+    def _init_artcbf(self, data_model) -> tf.Tensor:
         """
         Initial value for the artcbf parameter
 
@@ -434,7 +414,7 @@ class AslRestModel(Model):
 
         :return tensor of size [W]
         """
-        data = self.data_model.data_flattened
+        data = data_model.data_flattened
         dmax = tf.reduce_mean(data, axis=1)
         thr = np.percentile(dmax, 90)
         init = tf.where(dmax > thr, 10, 1)
