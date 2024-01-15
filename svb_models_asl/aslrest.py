@@ -457,8 +457,3 @@ class AslRestModel(Model):
         thr = np.percentile(dmax, 90)
         init = tf.where(dmax > thr, 10, 1)
         return init, None
-
-    def data_normaliser(self, data) -> TF_DTYPE:
-        mn = np.mean(data)
-        pow_ten = np.floor(np.log10(mn)) - 1
-        return tf.cast(10**pow_ten, TF_DTYPE)
