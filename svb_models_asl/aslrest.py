@@ -19,12 +19,12 @@ class AslRestModel(Model):
     OPTIONS = [
         # ASL parameters
         ModelOption(
-            "tau",
+            "taus",
             "Bolus duration",
             units="s",
-            clargs=("--tau", "--bolus"),
-            type=float,
-            default=1.8,
+            clargs=("--taus", "--tau", "--bolus"),
+            type=ValueList(float),
+            default=[1.8],
         ),
         ModelOption("casl", "Data is CASL/pCASL", type=bool, default=True),
         ModelOption("tis", "Inversion times", units="s", type=ValueList(float)),
@@ -113,46 +113,64 @@ class AslRestModel(Model):
 
     def __init__(self, structure, **options):
         Model.__init__(self, structure, **options)
-
         # Default tissue CBF for the case where we are not inferring it.
         # This will almost always be overriden later on
         self.cbf = tf.cast(options.get("cbf", 0.0), TF_DTYPE)
         self.artcbf = tf.cast(options.get("artcbf", 0.0), TF_DTYPE)
 
-        # TIs calculated as PLD + bolus duration
-        if self.plds is not None:
-            self.plds = tf.constant(self.plds, dtype=TF_DTYPE)
-            self.tis = self.plds + self.tau
-        else:
-            self.tis = tf.constant(self.tis, dtype=TF_DTYPE)
-            self.plds = self.tis - self.tau
-
-        if (self.tis is None) and (self.plds is None):
+        if self.tis is not None and self.plds is not None:
+            raise ValueError("Cannot provide both PLDs and TIs")
+        if self.tis is None and self.plds is None:
             raise ValueError("Either TIs or PLDs must be given")
+        if self.plds is not None:
+            num_times = len(self.plds)
+        else:
+            num_times = len(self.tis)
 
-        if (not self.att_init) and self.is_multidelay:
-            self.att_init = "max"
+        # Bolus duration (tau) can be a list or a single number
+        try:
+            self.taus = [float(self.taus)]
+        except (TypeError, ValueError):
+            self.taus = list(self.taus)
+
+        if len(self.taus) == 1:
+            self.taus = self.taus * num_times
+        elif len(self.taus) != num_times:
+            raise ValueError("Number of bolus durations must match number of TIs/PLDs")
+
+        if self.plds is not None:
+            self.tis = np.array(self.taus) + np.array(self.plds)
 
         if self.attsd is None:
             self.attsd = 0.75 if len(self.tis) > 1 else 0.1
+        if self.artatt is None:
+            self.artatt = self.att - 0.4
+        if self.artattsd is None:
+            self.artattsd = self.attsd
+
+        # Repeats can be a sequence or a single number
+        try:
+            self.repeats = [int(self.repeats)]
+        except (ValueError, TypeError):
+            self.repeats = list(self.repeats)
+        if len(self.repeats) == 1:
+            self.repeats = self.repeats * len(self.tis)
+        elif len(self.repeats) != len(self.tis):
+            raise ValueError("Number of repeats must match number of TIs/PLDs")
+
+        # Apply repeats to bolus durations
+        new_taus = []
+        for tau, rpts in zip(self.taus, self.repeats):
+            new_taus += [tau] * rpts
+        self.taus = new_taus
+
+        if (not self.att_init) and self.is_multidelay:
+            self.att_init = "max"
 
         if self.pc is None:
             self.pc = 0.9
 
         self.leadscale = 0.01
-        if self.artatt is None:
-            self.artatt = self.att - 0.4
-
-        if self.artattsd is None:
-            self.artattsd = self.attsd
-
-        # Repeats are supposed to be a list but can be a single number
-        if isinstance(self.repeats, (int, np.integer)):
-            self.repeats = [self.repeats]
-        if len(self.repeats) == 1:
-            self.repeats = self.repeats * len(self.tis)
-        elif len(self.repeats) != len(self.tis):
-            raise ValueError("Number of repeats must match number of TIs/PLDs")
 
         # Slice timing offsets
         if self.slicedt and self.slicedt_img is not None:
@@ -230,7 +248,7 @@ class AslRestModel(Model):
         """
         PASL/pCASL kinetic model for tissue
 
-        :param t: timepoints for model evaluation
+        :param t: timepoints for model evaluation as integer volume indexes NOT actual time values
         :param cbf: CBF
         :param att: ATT
         :param t1: T1 decay constant
@@ -254,26 +272,33 @@ class AslRestModel(Model):
         # Override defaults with caller's parameters
         default_params.update(params)
 
+        # Extract time points and corresponding bolus durations
+        tpt_indexes = tf.squeeze(tpts)  # [B]
+        tpts_full = self.tpts_nodewise(self.structure.data_model)  # [W, N]
+        tpts = tf.gather(tpts_full, tpt_indexes, axis=-1)  # [W/1, B]
+        taus = tf.expand_dims(tf.gather(self.taus, tpt_indexes), axis=0)  # [1, B]
+
         # Reshape params and tpts for broadcasting
         default_params, tpts = self.reshape_for_evaluate(default_params, tpts)
+        taus = tf.expand_dims(taus, axis=1)
 
         signal = self.tissue_signal(
-            default_params["cbf"], default_params["att"], default_params["t1"], tpts
+            default_params["cbf"], default_params["att"], default_params["t1"], tpts, taus
         )
         if ("artcbf" in params) or ("artatt" in params):
             signal += self.arterial_signal(
-                default_params["artcbf"], default_params["artatt"], tpts
+                default_params["artcbf"], default_params["artatt"], tpts, taus
             )
 
         return signal
 
-    def tissue_signal(self, cbf, att, t1, tpts: tf.Tensor) -> tf.Tensor:
+    def tissue_signal(self, cbf, att, t1, tpts: tf.Tensor, taus) -> tf.Tensor:
         pc = self.pc
         fcalib = self.fcalib
 
         # Boolean masks indicating which voxel-timepoints are during the
         # bolus arrival and which are after
-        post_bolus = tpts > (self.tau + att)
+        post_bolus = tpts > (taus + att)
         during_bolus = (tpts > att) & tf.logical_not(post_bolus)
 
         # Rate constants
@@ -286,8 +311,8 @@ class AslRestModel(Model):
             during_bolus_signal = factor * (1 - tf.exp(-(tpts - att) / t1_app))
             post_bolus_signal = (
                 factor
-                * tf.exp(-(tpts - self.tau - att) / t1_app)
-                * (1 - tf.exp(-self.tau / t1_app))
+                * tf.exp(-(tpts - taus - att) / t1_app)
+                * (1 - tf.exp(-taus / t1_app))
             )
         else:
             # PASL kinetic model
@@ -296,7 +321,7 @@ class AslRestModel(Model):
             factor = f / r
             during_bolus_signal = factor * ((tf.exp(r * tpts) - tf.exp(r * att)))
             post_bolus_signal = factor * (
-                (tf.exp(r * (att + self.tau)) - tf.exp(r * att))
+                (tf.exp(r * (att + taus)) - tf.exp(r * att))
             )
 
         # Build the signal from the during and post bolus components leaving as zero
@@ -310,7 +335,7 @@ class AslRestModel(Model):
 
         return cbf * signal
 
-    def arterial_signal(self, artcbf, artatt, tpts: tf.Tensor) -> tf.Tensor:
+    def arterial_signal(self, artcbf, artatt, tpts: tf.Tensor, taus) -> tf.Tensor:
         """
         PASL/pCASL Kinetic model for arterial curve
 
@@ -329,7 +354,7 @@ class AslRestModel(Model):
 
         # Boolean masks indicating which voxel-timepoints are in the leadin phase
         # and which in the leadout
-        leadout = tpts > (artatt + self.tau / 2)
+        leadout = tpts > (artatt + taus / 2)
         leadin = tf.logical_not(leadout)
 
         # If artatt is smaller than the lead in scale, we could 'lose' some
@@ -344,7 +369,7 @@ class AslRestModel(Model):
         leadout_signal = (
             kcblood
             * 0.5
-            * (1 + tf.math.erf(-(tpts - artatt - self.tau) / self.leadscale))
+            * (1 + tf.math.erf(-(tpts - artatt - taus) / self.leadscale))
         )
 
         # Form final signal from combination of lead in and lead out signals
@@ -369,7 +394,8 @@ class AslRestModel(Model):
 
         # Note that this assumes data grouped by TIs/PLDs which is required for variable repeats
         base_tpts = np.array(
-            sum([[ti] * rpts for ti, rpts in zip(self.tis, self.repeats)], [])
+            sum([[ti] * rpts for ti, rpts in zip(self.tis, self.repeats)], []),
+            dtype=NP_DTYPE
         )
         acq_shape = list(data_model.data_vol.shape[:3])
 
@@ -436,7 +462,7 @@ class AslRestModel(Model):
         tpts_vol = self.tpts_vol(data_model)
         max_idx = tf.math.argmax(data_model.data_flattened, axis=1)
         time_max = tf.gather(tpts_vol, max_idx, batch_dims=1)
-        att = time_max - self.tau
+        att = time_max - np.mean(self.taus)
 
         pv = self.structure.to_voxels(tf.ones(self.structure.n_nodes))
         pv_thr = np.percentile(pv, 75)
