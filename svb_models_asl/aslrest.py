@@ -379,6 +379,26 @@ class AslRestModel(Model):
 
         return artcbf * signal
 
+    def tpts_nodewise(self, data_model) -> tf.Tensor:
+        """Node-wise timepoints for the model. See :func:`~AslRestModel.tpts_vol`"""
+
+        t = self.tpts_vol(data_model)
+
+        # Time points derived from volumetric data need to be transformed
+        # into node space. Potential for a sneaky bug here so ensure the
+        # range of transformed values is consistent with the voxelwise input
+        ts = self.structure.to_nodes(t)
+        if not (
+            np.allclose(np.min(t), np.min(ts), atol=1e-2)
+            and np.allclose(np.max(t), np.max(ts), atol=1e-2)
+        ):
+            raise ValueError(
+                "Node-wise model tpts contains values "
+                "outside the range of voxel-wise tpts"
+            )
+
+        return ts
+
     def tpts_vol(self, data_model) -> tf.Tensor:
         """
         Generate dense tensor of per-node timepoint values
