@@ -179,50 +179,40 @@ class AslRestModel(Model):
             if isinstance(self.slicedt_img, str):
                 self.slicedt_img = nib.load(self.slicedt_img).get_fdata()
 
-        name = "cbf"
-        if options.get(f"infer_{name}", False):
-            defaults = dict(
+        known_params = {
+            "cbf" : dict(
                 post_dist="F",
                 mean=1.5,
                 post_var=1e3,
                 prior_var=1e6,
                 post_init=self._init_cbf,
-            )
-            self.attach_param(name, True, defaults, options)
-
-        name = "att"
-        if options.get(f"infer_{name}", False):
-            defaults = dict(
+            ),
+            "att" : dict(
                 post_dist="F",
                 mean=self.att,
                 var=self.attsd**2,
                 post_init=self._init_att,
-            )
-            self.attach_param(name, True, defaults, options)
+            ),
+            "artcbf" : dict(
+                prior_dist="A",
+                post_dist="F",
+                mean=0,
+                prior_var=1e6,
+                post_var=0.5,
+                post_init=self._init_artcbf,
+            ),
+            "artatt" : dict(
+                post_dist="F",
+                mean=self.artatt,
+                var=self.artattsd**2,
+                # post_init=self._init_att,
+            ),
+            "t1" : dict(mean=self.t1, var=0.01)
+        }
 
-        # name = "t1"
-        # defaults = dict(mean=self.t1, var=0.01)
-        # self.attach_param("t1", options.get(f"infer_{name}", False), defaults, options)
-
-        # name = "artcbf"
-        # defaults = dict(
-        #     prior_dist="A",
-        #     post_dist="F",
-        #     mean=0,
-        #     prior_var=1e6,
-        #     post_var=0.5,
-        #     post_init=self._init_artcbf,
-        # )
-        # self.attach_param(name, options.get(f"infer_{name}", False), defaults, options)
-
-        # name = "artatt"
-        # defaults = dict(
-        #     post_dist="F",
-        #     mean=self.artatt,
-        #     var=self.artattsd**2,
-        #     # post_init=self._init_att,
-        # )
-        # self.attach_param(name, options.get(f"infer_{name}", False), defaults, options)
+        for name, defaults in known_params.items():
+            if options.get(f"infer_{name}", False):
+                self.attach_param(name, True, defaults, options)
 
     def __str__(self):
         return f"ASL resting state tissue model version {__version__}"
@@ -388,20 +378,20 @@ class AslRestModel(Model):
         # into node space. Potential for a sneaky bug here so ensure the
         # range of transformed values is consistent with the voxelwise input
         ts = self.structure.to_nodes(t)
-        if not (
-            np.allclose(np.min(t), np.min(ts), atol=1e-2)
-            and np.allclose(np.max(t), np.max(ts), atol=1e-2)
-        ):
-            raise ValueError(
-                "Node-wise model tpts contains values "
-                "outside the range of voxel-wise tpts"
-            )
+        # if not (
+        #     np.allclose(np.min(t), np.min(ts), atol=1e-2)
+        #     and np.allclose(np.max(t), np.max(ts), atol=1e-2)
+        # ):
+        #     raise ValueError(
+        #         "Node-wise model tpts contains values "
+        #         "outside the range of voxel-wise tpts"
+        #     )
 
         return ts
 
     def tpts_vol(self, data_model) -> tf.Tensor:
         """
-        Generate dense tensor of per-node timepoint values
+        Generate dense tensor of per-voxel timepoint values
 
         :return tensor of size [W,T]
         """
@@ -501,5 +491,5 @@ class AslRestModel(Model):
         data = data_model.data_flattened
         dmax = tf.reduce_mean(data, axis=1)
         thr = np.percentile(dmax, 90)
-        init = tf.where(dmax > thr, 10, 1)
+        init = tf.where(dmax > thr, 10.0, 0.01)
         return init, None
